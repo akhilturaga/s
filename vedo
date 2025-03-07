@@ -1059,18 +1059,13 @@
 #         self.neruon_factory = container.neuron_factory
 #         self.contact_factory = container.contact_factory
 
-#     def run(self, total_steps: int = 5000) -> None:
+#     def run(self, total_steps: int = 500) -> None:
 #         """Runs the entire simulation and ensures frames are saved correctly."""
 #         frame_count = 0
         
 #         # Ensure the correct save directory
 #         directory = r'C:\Users\16785\Desktop\neurorosette_code'
-#         # ✅ Fix: Ensure `directory` is actually a directory
-#         if not os.path.isdir(directory):  
-#             if os.path.exists(directory):  # If it's a file, rename or move it
-#                 print(f"⚠️ Warning: {directory} is a file, not a directory.")
-#             else:
-#                 os.makedirs(directory, exist_ok=True)  # Only create if it's a proper directory
+#         os.makedirs(directory, exist_ok=True)  # Force folder creation
 
 #         # 🔴 PRINT DEBUG INFO BEFORE STARTING
 #         print("\n✅ DEBUG: Checking File Save Path")
@@ -1317,7 +1312,6 @@
 #             config_path = Path(config_path)
 #         with open(config_path, "w") as file:
 #             yaml.safe_dump(self.config, file)
-
 # # class ConfigParser:
 # #     def __init__(self, config_path: Union[str, Path]):
 # #         if not isinstance(config_path, Path):
@@ -1349,21 +1343,21 @@
 # #     def get_interactions_data(self):
 # #         return self.config["interactions", {}]
 
-# #     def set(self, key: str, value):
-# #         keys = key.split(".")
-# #         config_section = self.config
-# #         for k in keys[:-1]:
-# #             config_section = config_section[k]
-# #         config_section[keys[-1]] = value
+#     # def set(self, key: str, value):
+#     #     keys = key.split(".")
+#     #     config_section = self.config
+#     #     for k in keys[:-1]:
+#     #         config_section = config_section[k]
+#     #     config_section[keys[-1]] = value
 
-# #     def save(self, config_path: Union[str, Path]):
-# #         if not isinstance(config_path, Path):
-# #             config_path = Path(config_path)
-# #         with open(config_path, "w") as file:
-# #             yaml.safe_dump(self.config, file)
+#     # def save(self, config_path: Union[str, Path]):
+#     #     if not isinstance(config_path, Path):
+#     #         config_path = Path(config_path)
+#     #     with open(config_path, "w") as file:
+#     #         yaml.safe_dump(self.config, file)
 
 # # Adjust configuration for testing rosette formation
-# CONFIG_PATH = r'C:\Users\16785\Desktop\neurorosette_code\config.yml'
+# CONFIG_PATH = r'C:\Users\16785\Desktop\neurorosette_code/config.yml'
 # parser = ConfigParser(CONFIG_PATH)
 # parser.set("neurons.clocks.proliferation_rate", 0.001)
 # parser.set("neurons.clocks.differentiation_rate", 0.001)
@@ -1377,7 +1371,33 @@
 
 
 
+#    # def __init__(
+#     #     self,
+#     #     grid: UniformGrid,
+#     #     simulation_2d: bool,
+#     #     neuron_factory: NeuronFactory,
+#     #     contact_factory: ContactFactory,
+#     #     drag_coefficient: float = 10.0,
+#     #     density_check: Optional[CellDensityCheck] = None,
+#     # ) -> None:
 
+#     #     self.grid = grid
+#     #     self.simulation_2d = simulation_2d
+#     #     self.sphere_int = contact_factory.get_sphere_sphere_interactions()
+#     #     self.sphere_cylinder_int = contact_factory.get_sphere_cylinder_interactions()
+#     #     self.cylinder_int = contact_factory.get_cylinder_cylinder_interactions()
+#     #     self.neuron_factory = neuron_factory
+#     #     self.object_factory = self.neuron_factory.objects_factory
+#     #     self.drag_coefficient = drag_coefficient
+#     #     self.density_check = density_check
+#     #     self.animator = Animator()
+#     #     self.neurons = []
+
+#     #     if self.simulation_2d:
+#     #         self.animator.add_grid(
+#     #             self.grid.representation_grid_values,
+#     #             self.grid.representation_grid_values,
+#     #         )
 
 
 
@@ -1671,6 +1691,9 @@ class SimulationContainer:
         self.rosette_formed = False  # Add a flag to track rosette formation
         self.indicator_color = "blue"  # Initial color for indicator
         self.locked_clusters = set()
+        self.clustering_complete = False
+        self.constriction_complete = False
+        self.polarization_complete = False  # Tracks if clustering phase has completed
 
         if self.simulation_2d:
             self.animator.add_grid(
@@ -1692,6 +1715,43 @@ class SimulationContainer:
             self.animator.springs.clear()
 
             print("Neurites removed.")  # Debugging
+    def apply_clustering_force(self, clustering_strength=0.01, attraction_probability=0.3, resistance_probability=0.2):
+            """
+            Moves neurons toward the cluster center with a **chance** of getting pulled in.
+            
+            Parameters:
+            - clustering_strength: How strongly neurons move toward the center (default: slow pull).
+            - attraction_probability: Chance that a neuron **starts moving** toward the cluster.
+            - resistance_probability: Chance a neuron **actively resists** and stays put.
+            """
+            if len(self.neurons) < 2:
+                return  # No clustering possible with one neuron
+
+            cluster_center = np.mean([n.cell.position for n in self.neurons], axis=0)  # Compute cluster center
+
+            for neuron in self.neurons:
+                if np.random.rand() < resistance_probability:  # Some neurons **actively resist** clustering
+                    continue  
+
+                if np.random.rand() < attraction_probability:  # Some neurons get pulled in
+                    direction_to_center = cluster_center - neuron.cell.position
+                    neuron.cell.position += direction_to_center * clustering_strength  # Controlled gradual movement
+                    neuron.cell.sphere.color("blue")  # Keep them **blue** while moving
+    def apply_constriction(self, min_cluster_size=5, compaction_strength=0.005):
+        """
+        Once neurons cluster, gently **compress** them into a tight rosette.
+        """
+        clusters = self.find_clusters(distance_threshold=5.0)  # Detect clusters dynamically
+
+        if len(clusters) > 3:  # Wait for at least 3 clusters
+            for cluster in clusters:
+                if len(cluster) >= min_cluster_size:  # Only apply to large enough clusters
+                    cluster_center = np.mean([n.cell.position for n in cluster], axis=0)
+                    for neuron in cluster:
+                        # Subtly move neurons **closer together**
+                        neuron.cell.position += (cluster_center - neuron.cell.position) * compaction_strength
+                        neuron.cell.sphere.scale([0.95, 0.95, 0.95])  # Very slow compaction
+                        neuron.cell.sphere.color("green")  # **ONLY fully compacted cells turn green**
     
     def apply_sheet_formation(self):
         """Forces all neurons into a cohesive monolayer with minimal vertical displacement."""
@@ -1851,123 +1911,125 @@ class SimulationContainer:
         return False  # No valid clusters met the threshold
 
   
+    # def update_sphere_colors_and_deform(self, time_step: float):
+    #     """
+    #     Updates the colors of spheres based on rosette formation status,
+    #     ensuring that cells first form a confluent sheet, then polarize,
+    #     then elongate correctly before lumen formation.
+    #     """
+
+    #     min_time_before_deform = 30  # Ensure initial cell layer formation
+    #     max_elongation_factor = 1.1  # Lower cap to prevent explosion
+    #     elongation_speed = 0.0002  # Slower elongation to avoid instability
+    #     jiggle_factor = 0.2  # Increased random movement magnitude before elongation
+
+    #     clusters = self.find_clusters(distance_threshold=5.0)
+
+    #     print(f"\n📊 Time: {self.timer.current_time} - Checking Morphogenesis Phase")
+
+    #     # ✅ **Ensure Cells Start Blue**
+    #     if self.timer.current_time < min_time_before_deform:
+    #         print("📌 Phase 1: Intercalation - Forcing cells into a single layer.")
+    #         avg_z = np.mean([n.cell.position[2] for n in self.neurons])
+    #         for neuron in self.neurons:
+    #             neuron.cell.position[2] = avg_z  # Align all to same Z-plane
+    #             neuron.cell.sphere.scale([1.0, 1.0, 1.0])
+    #             neuron.cell.sphere.color("blue")  # ✅ Ensure they start blue
+    #         self.animator.plotter.render()
+    #         return  
+
+    #     # ✅ **Increase Jiggling Before Elongation**
+    #     if min_time_before_deform <= self.timer.current_time < 60:
+    #         print("📌 Phase 2: Constriction - Compacting cell sheet.")
+    #         for neuron in self.neurons:
+    #             jiggle_vector = np.random.uniform(-jiggle_factor, jiggle_factor, size=3)
+    #             neuron.cell.position += jiggle_vector  # More movement
+    #             neuron.cell.sphere.scale([0.9, 1.0, 0.8])
+    #             neuron.cell.sphere.color("orange")
+
+    #     # ✅ **Controlled Polarization Phase**
+    #     if 60 <= self.timer.current_time < 90:
+    #         print("📌 Phase 3: Polarization - Aligning apical-basal surfaces.")
+    #         apical_surface_center = np.mean([n.cell.position for n in self.neurons], axis=0)
+    #         for neuron in self.neurons:
+    #             apical_vector = normalize_vector(apical_surface_center - neuron.cell.position) * 0.05
+    #             neuron.cell.position += apical_vector
+    #             neuron.cell.sphere.scale([1.0, 1.1, 1.0])
+    #             neuron.cell.sphere.color("red")
+
+    #     # ✅ **Soft, Stepwise Elongation to Prevent Explosion**
+    #     if 90 <= self.timer.current_time < 120:
+    #         print("📌 Phase 4: Elongation - Controlled growth.")
+
+    #         for neuron in self.neurons:
+    #             progress = (self.timer.current_time - 90) / (120 - 90)  # Normalize to [0,1]
+    #             elongation_factor = 1.0 + progress * (max_elongation_factor - 1.0)
+
+    #             # **Prevent sudden jumps by applying only slight increments**
+    #             if elongation_factor > 1.05:  
+    #                 elongation_factor = 1.05  # **Prevent runaway stretching**
+                
+    #             original_scale = np.array([1.0, 1.0, 1.0])
+    #             scaled_factor = original_scale * np.array([elongation_factor, 1.0, 0.9])
+                
+    #             neuron.cell.sphere.scale(scaled_factor)
+    #             neuron.cell.sphere.color("purple")
+
+    #     # ✅ **Lumen Formation - Stable Circular Organization**
+    #     if self.timer.current_time >= 120:
+    #         print("📌 Phase 5: Lumen Formation - Ensuring circular symmetry.")
+    #         lumen_center = np.mean([n.cell.position for n in self.neurons], axis=0)
+
+    #         for cluster in clusters:
+    #             if len(cluster) >= 5 and tuple(cluster) not in self.locked_clusters:
+    #                 self.locked_clusters.add(tuple(cluster))
+
+    #                 for i, neuron in enumerate(cluster):
+    #                     neuron.cell.sphere.scale([1.1, 1.0, 0.9])  # Keep elongation subtle
+    #                     neuron.cell.sphere.color("green")  # ✅ Mark lumen-forming cells
+                        
+    #                     angle = (i / len(cluster)) * 2 * np.pi
+    #                     radius = 5.0  
+    #                     neuron.cell.position = np.array([
+    #                         lumen_center[0] + radius * np.cos(angle),  
+    #                         lumen_center[1] + radius * np.sin(angle),  
+    #                         lumen_center[2]
+    #                     ])
+
+    #     self.animator.plotter.render()  # Ensure rendering updates properly
     def update_sphere_colors_and_deform(self, time_step: float):
         """
-        Updates the colors of spheres based on rosette formation status,
-        ensuring that cells first form a confluent sheet, then polarize,
-        then elongate correctly before lumen formation.
+        Handles **natural clustering, constriction, and color updates** over time.
         """
+        if not self.clustering_complete:
+            print(f"📌 Time {self.timer.current_time}: Clustering in progress...")
+            self.apply_clustering_force()  # Slowly attract to cluster center
 
-        min_time_before_deform = 30  # Ensure initial cell layer formation
-        max_elongation_factor = 1.2  # Cap elongation to prevent runaway stretching
-        elongation_speed = 0.0005  # Controls how fast elongation occurs
-        clusters = self.find_clusters(distance_threshold=5.0)
-
-        print(f"\n📊 Time: {self.timer.current_time} - Checking Morphogenesis Phase")
-
-        # 1️⃣ **Intercalation Phase: Flatten Cells into a Sheet**
-        if self.timer.current_time < min_time_before_deform:
-            avg_z = np.mean([n.cell.position[2] for n in self.neurons])
-            print("📌 Phase 1: Intercalation - Forcing cells into a single layer.")
-            for neuron in self.neurons:
-                neuron.cell.position[2] = avg_z  # Align all to same Z-plane
-                neuron.cell.sphere.scale([1.0, 1.0, 1.0])
-                neuron.cell.sphere.color("yellow")
-            self.animator.plotter.render()
-            return  
-
-        # 2️⃣ **Constriction Phase: Compact the Layer**
-        if min_time_before_deform <= self.timer.current_time < 60:
-            print("📌 Phase 2: Constriction - Compacting cell sheet.")
-            for neuron in self.neurons:
-                neuron.cell.sphere.scale([0.9, 1.0, 0.8])
-                neuron.cell.sphere.color("orange")
-
-        # 3️⃣ **Polarization Phase: Ensure Apical-Basal Polarity**
-        if 60 <= self.timer.current_time < 90:
-            print("📌 Phase 3: Polarization - Aligning apical-basal surfaces.")
-            apical_surface_center = np.mean([n.cell.position for n in self.neurons], axis=0)
-            for neuron in self.neurons:
-                apical_vector = normalize_vector(apical_surface_center - neuron.cell.position) * 0.05
-                neuron.cell.position += apical_vector
-                neuron.cell.sphere.scale([1.0, 1.1, 1.0])
-                neuron.cell.sphere.color("red")
-
-        # 4️⃣ **Elongation Phase: Controlled Growth**
-        if 50 <= self.timer.current_time < 120:
-            print("📌 Phase 4: Elongation - Cells stretching towards a stable structure.")
-            for neuron in self.neurons:
-                elongation_factor = 1.0 + (self.timer.current_time - 90) * elongation_speed  
-                elongation_factor = min(elongation_factor, max_elongation_factor)  # Cap elongation
-                original_scale = np.array([1.0, 1.0, 1.0])  # Keep track of the base scale
-                scaled_factor = original_scale * np.array([elongation_factor, 1.0, 0.9])
-                neuron.cell.sphere.scale(scaled_factor)
-
-                neuron.cell.sphere.color("purple")
-
-        # 5️⃣ **Lumen Formation: Organize Cells into a Rosette**
-        if self.timer.current_time >= 120:
-            print("📌 Phase 5: Lumen Formation - Ensuring circular symmetry.")
-
-            lumen_center = np.mean([n.cell.position for n in self.neurons], axis=0)
-
-            for cluster in clusters:
-                if len(cluster) >= 5 and tuple(cluster) not in self.locked_clusters:
-                    self.locked_clusters.add(tuple(cluster))  
-
-                    # Compute radial directions for circular pattern
-                    for i, neuron in enumerate(cluster):
-                        neuron.cell.sphere.scale([1.2, 1.0, 0.8])
-                        neuron.cell.sphere.color("green")  # Mark lumen-forming cells
-                        
-                        # Compute circular position around the lumen center
-                        angle = (i / len(cluster)) * 2 * np.pi  # Evenly distribute in a circle
-                        radius = 5.0  # Set fixed radius for loop
-                        neuron.cell.position = np.array([
-                            lumen_center[0] + radius * np.cos(angle),  
-                            lumen_center[1] + radius * np.sin(angle),  
-                            lumen_center[2]  # Maintain original Z-plane  
-                        ])
-
-
-
-    def update_sphere_colors(self, initialize: bool = False):
-        """
-        Updates the colors of spheres based on rosette formation status.
-        Highlights entire clusters when rosettes are formed.
-
-        Parameters
-        ----------
-        initialize : bool
-            If True, resets all neurons to blue without evaluating clusters.
-        """
-        if initialize:
-            # Reset all neurons to blue without evaluating clusters
+            # Reset all neurons to blue **during clustering**
             for neuron in self.neurons:
                 neuron.cell.sphere.color("blue")
-            self.animator.plotter.render()
-            return
 
-        # Otherwise, evaluate clusters and update colors dynamically
-        clusters = self.find_clusters(distance_threshold=10.0)  # Adjust threshold as needed
+            # Stop clustering once **most neurons** are close together
+            avg_distance = np.mean([
+                np.linalg.norm(n.cell.position - np.mean([m.cell.position for m in self.neurons], axis=0)) 
+                for n in self.neurons
+            ])
+            if avg_distance < 10:  # Dynamic threshold to stop clustering
+                self.clustering_complete = True  
 
-        # Reset all neurons to blue before updating colors
-        for neuron in self.neurons:
-            neuron.cell.sphere.color("blue")  # Default color for all neurons
+        else:
+            print(f"📌 Time {self.timer.current_time}: Constriction phase...")
+            self.apply_constriction()  # Start **compacting** after clustering
 
-        for cluster in clusters:
-            if len(cluster) >= 4:  # Cluster threshold set to 4
-                for neuron in cluster:
-                    neuron.cell.sphere.color("green")  # Highlight the cluster
+            # Identify clusters and **only turn tightly packed neurons green**
+            clusters = self.find_clusters(distance_threshold=5.0)
+            for cluster in clusters:
+                if len(cluster) >= 4:  # Only turn clusters green if they are large enough
+                    for neuron in cluster:
+                        neuron.cell.sphere.color("green")
 
-        self.animator.plotter.render()  # Refresh rendering
+        self.animator.plotter.render()  # **Render only once at the end!**
 
-        for neuron in self.neurons:
-            if len(neuron.neurites) >= 2:  # Example condition for clustering
-                neuron.cell.sphere.color("red")  # Set color for rosette
-            else:
-                neuron.cell.sphere.color("blue")  # Default color
-        self.animator.plotter.render()  # Refresh rendering
 
     def update_indicator(self):
         """
@@ -2031,69 +2093,78 @@ class SimulationContainer:
         print(f"📊 Aspect Ratio (AR): {AR:.4f} 🔼")
         print(f"📊 Radial Symmetry Index (RSI): {RSI:.4f} 🔼")
 
-        # 🏗️ **Adjust Behavior Based on Parameter Trends**
-        
-        # **Phase 1: Intercalation (NNV High, C Low, H High)**
-        if self.timer.current_time < 20:
-            for neuron in self.neurons:
-                neuron.cell.sphere.color("yellow")  # Mark intercalation phase
-                neuron.cell.position += np.random.uniform(-0.1, 0.1, size=3)  # Allow small shifts
-            print("🟡 Intercalation Phase Active")
-        
-        # **Phase 2: Constriction (C Increases, NNV Drops)**
-        elif 20 <= self.timer.current_time < 50:
-            for neuron in self.neurons:
-                neuron.adjust_neurite_position()  # Simulate actomyosin constriction
-                neuron.cell.sphere.color("orange")  # Mark constriction phase
-            print("🟠 Constriction Phase Active")
+        # 1️⃣ **Clustering Phase**
+        if not self.clustering_complete:
+            print(f"📌 Clustering in progress...")
+            self.apply_clustering_force()
+            
+            avg_distance = np.mean([
+                np.linalg.norm(n.cell.position - np.mean([m.cell.position for m in self.neurons], axis=0)) 
+                for n in self.neurons
+            ])
+            if avg_distance < 10:  
+                self.clustering_complete = True  
+                print("✅ Clustering complete! Moving to constriction.")
 
-        # **Phase 3: Polarization (H Drops, Alignment Forms)**
-        elif 50 <= self.timer.current_time < 80:
-            for neuron in self.neurons:
-                neuron.cell.sphere.color("blue")  # Mark polarization
-            print("🔵 Polarization Phase Active")
-        
-        # **Phase 4: Elongation (AR Rises, H Low)**
-        elif 80 <= self.timer.current_time < 110:
-            for neuron in self.neurons:
-                neuron.cell.sphere.scale([1.3, 1.0, 0.8])  # Increase aspect ratio
-            print("🔷 Elongation Phase Active")
+        # 2️⃣ **Constriction Phase**
+        if self.clustering_complete and not self.constriction_complete:
+            print(f"📌 Constriction in progress...")  
+            self.apply_constriction()
 
-        # **Phase 5: Lumen Formation (RSI Increases)**
-        else:
-            for neuron in self.neurons:
-                if neuron in self.locked_clusters:
-                    neuron.cell.sphere.color("green")  # Mark final rosette
-                else:
-                    neuron.cell.sphere.color("lightgreen")  # Mark partial lumen formation
-            print("🟢 Lumen Formation Active")
+            # Compute **current structural properties**
+            C = compute_clustering_coefficient(self.neurons)  # Clustering coefficient
+            AR = compute_aspect_ratio(self.neurons)  # Aspect ratio
 
-            """Progressively transitions cells from sheet formation to rosette folding."""
-    
-    # 🔴 **Phase 1: Sheet Formation**
-        if self.timer.current_time < 20:
-            self.apply_sheet_formation()
+            print(f"📊 Checking constriction status: C={C:.4f}, AR={AR:.4f}")
 
-        # 🔵 **Phase 2: Lateral Stretching**
-        elif 20 <= self.timer.current_time < 50:
-            self.apply_lateral_stretching()
+            # ✅ **New Constriction Completion Criteria**
+            if C < 0.16 and AR < 1.5:  
+                self.constriction_complete = True
+                print("✅ Constriction **complete**! Transitioning to **polarization**.")
 
-        # 🟠 **Phase 3: Polarity Establishment**
-        elif 50 <= self.timer.current_time < 80:
+        # 3️⃣ **Polarization Phase**
+
+        # 3️⃣ **Polarization Phase**
+        if self.constriction_complete and not self.polarization_complete:
+            print(f"📌 Polarization in progress...")  
             self.apply_polarity_establishment()
 
-        # 🟣 **Phase 4: Rosette Folding**
-        elif 80 <= self.timer.current_time < 110:
+
+            H = compute_orientation_entropy(self.neurons)  # Compute entropy
+            cluster_center = np.mean([n.cell.position for n in self.neurons], axis=0)  # Find cluster center
+
+
+            #  ✅ **Controlled widening & orientation**
+            for neuron in self.neurons:
+                direction_to_center = normalize_vector(cluster_center - neuron.cell.position)  # Find vector to center
+               
+                # 🔵 **Apply a slight widening effect**
+                new_scale = [1.2, 0.9, 1.0]  # Slight horizontal widening (X), reduce height (Y)
+                neuron.cell.sphere.scale(new_scale)  
+
+
+                # 🔄 **Rotate the elongated axis towards the cluster center**
+                neuron.cell.sphere.orientation(direction_to_center)  
+
+
+            # ✅ **Check if polarization is complete**
+            if H < 0.5:  
+                self.polarization_complete = True
+                print("✅ Polarization **complete**! Moving to lumen formation.")
+
+
+
+
+
+        # 4️⃣ **Lumen Formation**
+        if self.polarization_complete:
+            print(f"📌 Lumen formation in progress...")
             self.induce_rosette_folding()
+            self.rosette_formed = True
 
-        # ✅ **Final State: Mature Rosette**
-        else:
-            print("✅ Rosette successfully formed!")
-
-        # Update visualization
+        # **Update Visualization**
         self.update_sphere_colors_and_deform(time_step)
         self.update_indicator()
-
 
 
 
