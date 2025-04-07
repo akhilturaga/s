@@ -1,0 +1,1408 @@
+# """This module deals with the neuron structure and functions"""
+# import time
+# from pathlib import Path
+# from typing import List, Optional, Union
+# from dataclasses import dataclass
+# import imageio.v2 as iio
+# import os
+# import yaml
+
+# import numpy as np
+# from vedo import ProgressBar, merge, Cylinder, write
+
+# # from neurorosettes.config import ConfigParser
+# # from neurorosettes.clocks import ClocksFactory
+# # from neurorosettes.physics import (
+# #     ContactFactory,
+# #     PotentialsFactory,
+# #     SimpleFactory,
+# #     get_cylinder_intersection,
+# # )
+# # from neurorosettes.subcellular import CellBody, Neurite, ObjectFactory
+# # from neurorosettes.neurons import Neuron, NeuronFactory
+# # from neurorosettes.utilities import Animator, get_random_unit_vector
+# # from neurorosettes.grid import UniformGrid, CellDensityCheck
+
+# from config import ConfigParser
+# from clocks import ClocksFactory
+# from physics import (
+#     ContactFactory,
+#     PotentialsFactory,
+#     SimpleFactory,
+#     get_cylinder_intersection,
+# )
+# from subcellular import CellBody, Neurite, ObjectFactory
+# from neurons import Neuron, NeuronFactory
+# from utilities import Animator, get_random_unit_vector
+# from grid import UniformGrid, CellDensityCheck
+
+
+# def ccw(A, B, C):
+#     return (C[1] - A[1]) * (B[0] - A[0]) > (B[1] - A[1]) * (C[0] - A[0])
+
+
+# # Return true if line segments AB and CD intersect
+# def intersect(A, B, C, D):
+#     return ccw(A, C, D) != ccw(B, C, D) and ccw(A, B, C) != ccw(A, B, D)
+
+
+# @dataclass
+# class Timer:
+#     """Class to store the simulation time data."""
+
+#     total_time: float
+#     """The total time of a simulation (in minutes)."""
+#     step: float = 0.3
+#     """The time between simulation points (in minutes)."""
+#     current_time: float = 0.0
+#     """The current time point of the simulation."""
+
+#     def get_progress_bar(self) -> ProgressBar:
+#         """Returns a progress bar with the simulation time"""
+#         return ProgressBar(0, self.total_time / self.step, c="r")
+
+
+# class SimulationContainer:
+#     """
+#     Class that represents the environment where neurons exist.
+
+#     Parameters
+#     ----------
+#     grid
+#         The grid where simulation objects will be stored,
+#         to improve neighbor interactions.
+#     simulation_2d
+#         If the simulation is 2D or 3D.
+#     neuron_factory
+#         The factory object to be used to create new neurons.
+#     contact_factory
+#         The factory object to be used to create interactions.
+#     drag_coefficient
+#         The drag coefficient of the extracellular space.
+#     density_check
+#         Optional contact inhibition function to inhibit proliferation
+#         when the cell density is too high.
+#     """
+#     def __init__(
+#         self,
+#         grid: UniformGrid,
+#         simulation_2d: bool,
+#         neuron_factory: NeuronFactory,
+#         contact_factory: ContactFactory,
+#         timer: Timer,
+#         drag_coefficient: float = 10.0,
+#         density_check: Optional[CellDensityCheck] = None,
+#     ) -> None:
+#         # Existing initialization code
+#         self.dynamic_proliferation_rate = 1.5
+#         self.timer = timer
+#         self.grid = grid
+#         self.simulation_2d = simulation_2d
+#         self.sphere_int = contact_factory.get_sphere_sphere_interactions()
+#         self.sphere_cylinder_int = contact_factory.get_sphere_cylinder_interactions()
+#         self.cylinder_int = contact_factory.get_cylinder_cylinder_interactions()
+#         self.neuron_factory = neuron_factory
+#         self.contact_factory = contact_factory
+#         self.object_factory = self.neuron_factory.objects_factory
+#         self.drag_coefficient = drag_coefficient
+#         self.density_check = density_check
+#         self.animator = Animator()
+#         self.neurons = []
+#         self.rosette_formed = False  # Add a flag to track rosette formation
+#         self.indicator_color = "blue"  # Initial color for indicator
+#         self.locked_clusters = set()
+
+#         if self.simulation_2d:
+#             self.animator.add_grid(
+#                 self.grid.representation_grid_values,
+#                 self.grid.representation_grid_values,
+#             )
+#     def remove_neurites(self):
+#             """
+#             Removes all neurites from neurons and clears their visual representation.
+#             """
+#             for neuron in self.neurons:
+#                 neuron.neurites.clear()  # Remove neurites from neuron structure
+
+#             # Remove all springs visually (assuming self.springs stores neurite representations)
+#             for spring in self.animator.springs:
+#                 self.animator.plotter.remove(spring)
+
+#             # Clear the stored springs list to prevent further references
+#             self.animator.springs.clear()
+
+#             print("Neurites removed.")  # Debugging
+
+#     def find_clusters(self, distance_threshold: float) -> List[List[Neuron]]:
+#         """
+#         Groups neurons into clusters based on a distance threshold.
+
+#         Parameters
+#         ----------
+#         distance_threshold : float
+#             The maximum distance between neurons to be considered part of the same cluster.
+
+#         Returns
+#         -------
+#         List[List[Neuron]]
+#             A list of clusters, where each cluster is a list of neurons.
+#         """
+#         clusters = []
+#         visited = set()
+
+#         for neuron in self.neurons:
+#             if neuron not in visited:
+#                 cluster = self._dfs_cluster(neuron, distance_threshold, visited)
+#                 clusters.append(cluster)
+#         return clusters
+
+#     def _dfs_cluster(self, neuron: Neuron, distance_threshold: float, visited: set) -> List[Neuron]:
+#         """
+#         Performs a depth-first search to find all neurons in the same cluster.
+
+#         Parameters
+#         ----------
+#         neuron : Neuron
+#             The starting neuron for the search.
+#         distance_threshold : float
+#             The maximum distance between neurons to be considered part of the same cluster.
+#         visited : set
+#             A set to keep track of visited neurons.
+
+#         Returns
+#         -------
+#         List[Neuron]
+#             A list of neurons in the same cluster as the starting neuron.
+#         """
+#         stack = [neuron]
+#         cluster = []
+
+#         while stack:
+#             current = stack.pop()
+#             if current not in visited:
+#                 visited.add(current)
+#                 cluster.append(current)
+#                 for neighbor in self._get_neighbors(current, distance_threshold):
+#                     if neighbor not in visited:
+#                         stack.append(neighbor)
+#         return cluster
+
+#     def _get_neighbors(self, neuron: Neuron, distance_threshold: float) -> List[Neuron]:
+#         """
+#         Finds all neighbors of a neuron within a given distance.
+
+#         Parameters
+#         ----------
+#         neuron : Neuron
+#             The neuron for which to find neighbors.
+#         distance_threshold : float
+#             The maximum distance to consider a neighbor.
+
+#         Returns
+#         -------
+#         List[Neuron]
+#             A list of neighboring neurons.
+#         """
+#         neighbors = []
+#         neuron_position = neuron.cell.position  # Access the correct position attribute
+
+#         for other_neuron in self.neurons:
+#             other_position = other_neuron.cell.position  # Access the position of the other neuron
+#             if other_neuron != neuron and np.linalg.norm(neuron_position - other_position) <= distance_threshold:
+#                 neighbors.append(other_neuron)
+#         return neighbors
+
+#         # try:
+#         #     neuron_position = neuron.cell.position  # Correctly access the position attribute
+#         # except AttributeError:
+#         #     raise AttributeError("Neuron object does not have a 'cell.position' attribute. Check the Neuron class definition.")
+
+#         # for other_neuron in self.neurons:
+#         #     try:
+#         #         other_position = other_neuron.cell.position  # Access the position of other neurons
+#         #     except AttributeError:
+#         #         continue  # Skip if the neuron doesn't have a valid position
+
+#         #     if other_neuron != neuron and np.linalg.norm(neuron_position - other_position) <= distance_threshold:
+#         #         neighbors.append(other_neuron)
+
+#         # return neighbors
+#     def check_rosette_formation(self, min_time_before_check: float = 150.0) -> bool:
+#         """
+#         Checks if any clusters meet the threshold for rosette formation.
+
+#         Parameters
+#         ----------
+#         min_time_before_check : float
+#             The minimum time that must pass before checking for rosettes.
+
+#         Returns
+#         -------
+#         bool
+#             True if at least one cluster meets the threshold for rosette formation, False otherwise.
+#         """
+
+#         # Ensure enough time has passed before checking for rosettes
+#         if self.timer.current_time < min_time_before_check:
+#             print(f"Skipping rosette check at time {self.timer.current_time}. Not enough time has passed.")
+#             return False  # Do not check too early
+
+#         clusters = self.find_clusters(distance_threshold=5.0)  
+
+#         # Debugging: Log cluster formation
+#         print(f"Number of clusters detected: {len(clusters)} at time {self.timer.current_time}")
+
+#         for i, cluster in enumerate(clusters):
+#             # Increase the threshold for detecting real rosettes
+#             if len(cluster) >= 4:  
+#                 print(f"Rosette formation detected in Cluster {i} (size: {len(cluster)})")
+#                 return True  # A rosette is confirmed
+
+#         print("No rosettes detected this cycle.")
+#         return False  # No valid clusters met the threshold
+
+  
+#     def update_sphere_colors_and_deform(self, time_step: float, min_time_before_deform: float = 100.0):
+#         """
+#         Updates the colors of spheres based on rosette formation status
+#         and gradually deforms spheres into ellipsoids as they differentiate.
+
+#         Parameters
+#         ----------
+#         time_step : float
+#             The current simulation time step used to scale the elongation.
+#         min_time_before_deform : float
+#             The minimum time that must pass before neurons start deforming.
+#         """
+        
+#         # Keep neurons spherical before the deformation threshold is reached
+#         min_time_before_deform = 200  # Allow some division cycles before deformation
+#         clusters = self.find_clusters(distance_threshold=5.0)  
+#         jiggle = np.random.uniform(-0.10, 0.10, size=3)  
+
+#         for neuron in self.neurons:
+#                 neuron.cell.sphere.scale([1.0, 1.0, 1.0])  # Keep as perfect spheres
+#                 neuron.cell.sphere.color("blue")  # Default color before elongation
+#                 # Apply slight random movement (jiggling effect)
+#                 jiggle_vector = np.random.uniform(-0.10, 0.10, size=3)
+#                 neuron.cell.position += jiggle_vector
+
+#          # Prevent elongation until enough time has passed
+#         if self.timer.current_time < min_time_before_deform:
+#             self.animator.plotter.render()  # Refresh rendering for jiggling only
+#             return  # Stop further processing until time threshold is reached
+        
+#         # Gradually elongate neurons that are NOT in locked clusters
+#         for neuron in self.neurons:
+#             if neuron not in [n for c in self.locked_clusters for n in c]:
+#                 # Slow, gradual elongation factor
+#                 elongation_factor = 1.0 + min((self.timer.current_time - min_time_before_deform) * 0.0005, 0.3)  
+#                 neuron.cell.sphere.scale([elongation_factor, 1.0, 1.0])  # Apply elongation gradually
+#                 neuron.cell.sphere.color("blue")  # Keep neurons blue until they form a rosette
+
+#         # Highlight clusters and lock their shapes when forming rosettes
+#         for cluster in clusters:
+#             cluster_tuple = tuple(cluster)
+
+#             if len(cluster) >= 3 and cluster_tuple not in self.locked_clusters:  
+#                 self.locked_clusters.add(cluster_tuple)  # Lock the shape once rosettes form
+#                 for neuron in cluster:
+#                     neuron.cell.sphere.color("green")  # Highlight the rosette cluster
+#                     neuron.cell.sphere.scale([1.4, 1.0, 1.0])  # Maximum elongation for rosettes
+
+#         self.animator.plotter.render()  # Refresh rendering
+
+
+#     # def update_sphere_colors(self, initialize: bool = False):
+#     #     """
+#     #     Updates the colors of spheres based on rosette formation status.
+#     #     Highlights entire clusters when rosettes are formed.
+
+#     #     Parameters
+#     #     ----------
+#     #     initialize : bool
+#     #         If True, resets all neurons to blue without evaluating clusters.
+#     #     """
+#     #     if initialize:
+#     #         # Reset all neurons to blue without evaluating clusters
+#     #         for neuron in self.neurons:
+#     #             neuron.cell.sphere.color("blue")
+#     #         self.animator.plotter.render()
+#     #         return
+
+#     #     # Otherwise, evaluate clusters and update colors dynamically
+#     #     clusters = self.find_clusters(distance_threshold=10.0)  # Adjust threshold as needed
+
+#     #     # Reset all neurons to blue before updating colors
+#     #     for neuron in self.neurons:
+#     #         neuron.cell.sphere.color("blue")  # Default color for all neurons
+
+#     #     for cluster in clusters:
+#     #         if len(cluster) >= 4:  # Cluster threshold set to 4
+#     #             for neuron in cluster:
+#     #                 neuron.cell.sphere.color("green")  # Highlight the cluster
+
+#     #     self.animator.plotter.render()  # Refresh rendering
+
+#         # for neuron in self.neurons:
+#         #     if len(neuron.neurites) >= 2:  # Example condition for clustering
+#         #         neuron.cell.sphere.color("red")  # Set color for rosette
+#         #     else:
+#         #         neuron.cell.sphere.color("blue")  # Default color
+#         # self.animator.plotter.render()  # Refresh rendering
+
+#     def update_indicator(self):
+#         """
+#         Updates the indicator color based on rosette formation status.
+#         """
+#         # Re-check clusters to determine rosette formation status
+#         clusters = self.find_clusters(distance_threshold = 9.0)  # Ensure the threshold matches elsewhere
+#         self.rosette_formed = any(len(cluster) >= 3 for cluster in clusters)
+
+#         if self.rosette_formed:
+#             self.indicator_color = "green"
+#         else:
+#             self.indicator_color = "blue"
+#         print(f"Indicator updated to: {self.indicator_color}")
+
+#         # Ensure the animator reflects this change visually
+#         self.animator.update_indicator(color=self.indicator_color)
+
+#     def jiggle_neurons(self, jiggle_magnitude: float = 0.10) -> None:
+#         """
+#         Jiggling with dynamic control based on time or density.
+#         """
+#         current_density = len(self.neurons) / self.grid.total_volume
+#         adjusted_magnitude = max(0.10, jiggle_magnitude * (1 - current_density))  # Reduce jiggle as density increases
+
+#         for neuron in self.neurons:
+#             jiggle_vector = np.random.uniform(-jiggle_magnitude, jiggle_magnitude, size=3)
+#             neuron.cell.position += jiggle_vector
+#             neuron.cell.sphere.pos(neuron.cell.position)
+#         self.animator.plotter.render()
+
+#     def update(self): 
+#         """
+#         Updates the simulation container by advancing cycles, handling differentiation,
+#         killing neurons, and updating drawings.
+#         """
+#         self.advance_cycles(self.timer.step)
+#         self.kill()
+#         self.differentiate()
+#         self.divide()
+#         self.solve_mechanics(self.timer.step)
+#         self.update_drawings()
+
+#     def advance_cycles(self, time_step: float) -> None:
+#         """
+#         Advances the simulation by one time step, checking for rosette formation,
+#         updating colors dynamically, and applying gradual deformation logic.
+
+#         Parameters
+#         ----------
+#         time_step : float
+#             The current simulation time step.
+#         """
+#         # Gradually increase proliferation rate over time
+#         self.dynamic_proliferation_rate = min(self.dynamic_proliferation_rate + 0.02, 0.5)
+#         # Apply jiggling motion to neurons
+#         self.jiggle_neurons(jiggle_magnitude=0.10)  # Adjust magnitude as needed
+
+#         for neuron in self.neurons:
+#             neuron.clocks.proliferation_rate = self.dynamic_proliferation_rate  # Apply dynamic rate
+#             neuron.clocks.advance_clocks(time_step)
+        
+
+#         if not self.rosette_formed and self.check_rosette_formation():
+#             self.rosette_formed = True
+
+#         self.remove_neurites()
+#         self.update_sphere_colors_and_deform(time_step)  # Update colors and deform shapes gradually
+#         self.update_indicator()  # Update the global indicator
+
+#         # """
+#         # Checks if conditions for rosette formation are met.
+#         # Returns True if rosette formation is detected, otherwise False.
+#         # """
+#         # # Define criteria for rosette formation. For example:
+#         # # - Check if a certain number of neurons are in close proximity (clustered)
+#         # # - Check if all neurons have extended a minimum number of neurites
+#         # # Example: assuming rosette formation means each neuron has at least 2 neurites and forms a cluster
+#         # cluster_threshold = 3  # Example threshold for cluster size
+#         # clustered_neurons = [
+#         #     neuron for neuron in self.neurons
+#         #     if len(neuron.neurites) >= 2  # Example neurite condition
+#         #     and self.is_neuron_clustered(neuron, cluster_threshold)  # Check clustering
+#         # ]
+        
+#         # # If enough neurons meet the criteria, we consider the rosette formed
+#         # return len(clustered_neurons) >= cluster_threshold
+
+#     # def is_neuron_clustered(self, neuron: Neuron, distance_threshold: float) -> bool:
+#     #     """
+#     #     Checks if a neuron is within a certain distance of enough neighboring neurons.
+
+#     #     Parameters
+#     #     ----------
+#     #     neuron : Neuron
+#     #         The neuron to check for clustering.
+#     #     distance_threshold : float
+#     #         The distance threshold for considering a neuron as part of a cluster.
+
+#     #     Returns
+#     #     -------
+#     #     bool
+#     #         True if the neuron is clustered with others, False otherwise.
+#     #     """
+#     #     nearby_neurons = [
+#     #         other_neuron for other_neuron in self.neurons
+#     #         if other_neuron is not neuron
+#     #         and np.linalg.norm(neuron.cell.position - other_neuron.cell.position) < distance_threshold
+#     #     ]
+#     #     return len(nearby_neurons) >= 3  # Example condition: clustered if at least 3 nearby neurons
+
+#     # def update_indicator(self):
+#     #     """Updates the color of the indicator based on rosette formation status."""
+#     #     if self.rosette_formed:
+#     #         self.indicator_color = "green"  # Rosette formation detected
+#     #     else:
+#     #         self.indicator_color = "blue"  # No rosette formation detected
+#     #     self.animator.update_indicator(color=self.indicator_color)  # Update indicator in animator
+
+#     # def advance_cycles(self, time_step: float) -> None:
+#     #     """
+#     #     Updates the biological clocks of every object in the simulation and checks for rosette formation.
+
+#     #     Parameters
+#     #     ----------
+#     #     time_step
+#     #         The time between simulation time points.
+#     #     """
+#     #     for neuron in self.neurons:
+#     #         neuron.clocks.advance_clocks(time_step)
+
+#     #     # Check rosette formation
+#     #     if not self.rosette_formed and self.check_rosette_formation():
+#     #         self.rosette_formed = True  # Update the rosette formation status
+
+#     #     # Update the indicator color based on rosette status
+#     #     self.update_indicator()
+
+#     def set_density_check(self, density_check: CellDensityCheck) -> None:
+#         """
+#         Sets the contact inhibition function to be used before proliferation.
+
+#         Parameters
+#         ----------
+#         density_check
+#             The contact inhibition function to be used.
+#         """
+#         self.density_check = density_check
+
+#     def register_neuron(self, neuron: Neuron, color="blue") -> None:
+#         """
+#         Registers a neuron and its representation into the container.
+
+#         Parameters
+#         ----------
+#         neuron
+#             The new neuron to be registered.
+#         color
+#             The color of the sphere that will represent the new neuron
+#             in the renderings of the simulation.
+#         """
+#         neuron.cell.set_sphere_representation(self.animator, color=color)
+#         self.grid.register_cell(neuron.cell)
+#         for neurite in neuron.neurites:
+#             neurite.create_neurite_representation(self.animator)
+#             self.grid.register_neurite(neurite)
+
+#         self.neurons.append(neuron)
+    
+
+
+#     def update_drawings(self) -> None:
+#         """Updates the representations of the neurons"""
+#         for neuron in self.neurons:
+#             neuron.cell.update_representation()
+#             for neurite in neuron.neurites:
+#                 neurite.update_representation()
+
+#         self.animator.plotter.show()
+
+#     # def advance_cycles(self, time_step: float) -> None:
+#     #     """
+#     #     Updates the biological clocks of every object in the simulation.
+
+#     #     Parameters
+#     #     ----------
+#     #     time_step
+#     #         The time between simulation time points.
+#     #     """
+#     #     for neuron in self.neurons:
+#     #         neuron.clocks.advance_clocks(time_step)
+
+#     # def create_new_neuron(
+#     #     self,
+#     #     coordinates: Union[np.ndarray, List[float]],
+#     #     outgrowth_axis: Optional[Union[List[float], np.ndarray]] = None,
+#     #     color="darkblue",
+#     # ) -> Neuron:
+#     def create_new_neuron(self, coordinates: List[float]) -> Neuron:
+#         outgrowth_axis = np.subtract([0,0,0], coordinates)
+#         """Creates a new neuron at the given coordinates."""
+#         neuron = self.neuron_factory.create_neuron(coordinates, outgrowth_axis)
+#         neuron.cell.set_sphere_representation(self.animator, color="blue")  # Initial color
+#         neuron.cell.sphere.scale([0.5, 0.5, 0.5])  # Ensure spherical shape
+#         self.neurons.append(neuron)
+#         return neuron
+
+#         """
+#         Creates a new neuron and registers it to the container's grid.
+
+#         The new neuron is created as an undifferentiated cell body centred at
+#         the passed coordinates. An outgrowth axis vector can be passed to model
+#         neurite outgrowth along this direction.
+
+#         Parameters
+#         ----------
+#         coordinates
+#             The center position of the neuron's cell body.
+#         outgrowth_axis
+#             The direction of growth of the neuron's neurites.
+#         color
+#             The color of the new neurite in the simulation renders.
+#         """
+#         if isinstance(coordinates, list):
+#             coordinates = np.array(coordinates)
+
+#         if not isinstance(outgrowth_axis, np.ndarray):
+#             if isinstance(outgrowth_axis, list):
+#                 outgrowth_axis = np.array(outgrowth_axis)
+#             else:
+#                 outgrowth_axis = get_random_unit_vector(
+#                     two_dimensions=self.simulation_2d
+#                 )
+
+#         new_neuron = self.neuron_factory.create_neuron(coordinates, outgrowth_axis)
+#         self.register_neuron(new_neuron, color=color)
+
+#         return new_neuron
+
+#     def differentiate(self) -> None:
+#         """Checks for neurons that are flagged for differentiation and deals with differentiation"""
+#         new_neurons = []
+#         for neuron in self.neurons:
+#             if not neuron.ready_for_differentiation:
+#                 neuron.clocks.advance_clock() #fast forwards cell cycle
+#                 continue
+#             neuron.clocks.differentiation_clock.differentiation_signal = False
+#             # if (
+#             #     not neuron.ready_for_differentiation
+#             #     or len(neuron.neurites) >= neuron.max_number_of_neurites
+#             # ):
+#             #     continue
+#             # # Decide whether to create a new neurite or extend an existing one
+#             # if neuron.neurites:
+#             #     neurite = neuron.create_secondary_neurite(self.object_factory)
+#             #     neurite = neuron.neurites[-1]
+
+#             #     nearby_neurites = [
+#             #         nearby_object
+#             #         for nearby_object in self.grid.get_close_objects(
+#             #             neurite.distal_point
+#             #         )
+#             #         if isinstance(nearby_object, Neurite)
+#             #     ]
+
+#             #     nearby_neurites = [
+#             #         neurite
+#             #         for neurite in nearby_neurites
+#             #         if neurite not in neuron.neurites
+#             #     ]
+
+#             #     keep_going = True
+#             #     clear = [False for _ in nearby_neurites]
+
+#             #     while not all(clear) and keep_going:
+#             #         for i, neighbor in enumerate(nearby_neurites):
+
+#             #             neurite_axis = neurite.spring_axis
+
+#             #             if intersect(
+#             #                 neurite.proximal_point,
+#             #                 neurite.distal_point,
+#             #                 neighbor.proximal_point,
+#             #                 neighbor.distal_point,
+#             #             ):
+#             #                 good_point = get_cylinder_intersection(
+#             #                     neurite.proximal_point,
+#             #                     neurite.distal_point,
+#             #                     neighbor.proximal_point,
+#             #                     neighbor.distal_point,
+#             #                 )[0]
+
+#             #                 length = np.linalg.norm(
+#             #                     np.subtract(good_point, neurite.proximal_point)
+#             #                 )
+
+#             #                 if length < 5.0:
+#             #                     keep_going = False
+#             #                     neuron.neurites.pop(-1)
+#             #                     break
+
+#             #                 fraction = length / neurite.current_length
+
+#             #                 neurite.distal_point = (
+#             #                     neurite.proximal_point + fraction * neurite_axis
+#             #                 )
+#             #                 neurite.mechanics.default_length = np.linalg.norm(
+#             #                     neurite.spring_axis
+#             #                 )
+#             #                 clear[i] = True
+
+#             #             else:
+#             #                 clear[i] = True
+
+#             #     if all(clear):
+#             #         neurite.create_neurite_representation(self.animator)
+#             #         self.grid.register_neurite(neurite)
+
+#             # else:
+#             #     neuron.create_first_neurite(self.object_factory)
+#             #     neurite = neuron.neurites[0]
+
+#             #     nearby_neurites = [
+#             #         nearby_object
+#             #         for nearby_object in self.grid.get_close_objects(
+#             #             neurite.distal_point
+#             #         )
+#             #         if isinstance(nearby_object, Neurite)
+#             #     ]
+
+#             #     keep_going = True
+#             #     clear = [False for _ in nearby_neurites]
+
+#             #     while not all(clear) and keep_going:
+#             #         for i, neighbor in enumerate(nearby_neurites):
+
+#             #             neurite_axis = neurite.spring_axis
+
+#             #             if intersect(
+#             #                 neurite.proximal_point,
+#             #                 neurite.distal_point,
+#             #                 neighbor.proximal_point,
+#             #                 neighbor.distal_point,
+#             #             ):
+#             #                 good_point = get_cylinder_intersection(
+#             #                     neurite.proximal_point,
+#             #                     neurite.distal_point,
+#             #                     neighbor.proximal_point,
+#             #                     neighbor.distal_point,
+#             #                 )[0]
+
+#             #                 length = np.linalg.norm(
+#             #                     np.subtract(good_point, neurite.proximal_point)
+#             #                 )
+
+#             #                 if length < 5.0:
+#             #                     keep_going = False
+#             #                     neuron.neurites.pop(-1)
+#             #                     break
+
+#             #                 fraction = length / neurite.current_length
+
+#             #                 neurite.distal_point = (
+#             #                     neurite.proximal_point + fraction * neurite_axis
+#             #                 )
+#             #                 neurite.mechanics.default_length = np.linalg.norm(
+#             #                     neurite.spring_axis
+#             #                 )
+#             #                 clear[i] = True
+
+#             #             else:
+#             #                 clear[i] = True
+
+#             #     if all(clear):
+#             #         neurite.create_neurite_representation(self.animator)
+#             #         self.grid.register_neurite(neurite)
+
+#             # neuron.clocks.differentiation_clock.differentiation_signal = False
+
+#     def kill(self) -> None:
+#         """Checks for neurons that are flagged for death and removes them from the container"""
+#         for neuron in self.neurons:
+#             if not neuron.ready_to_die:
+#                 continue
+#             # Remove neuron and its representation
+#             self.animator.plotter -= neuron.cell.sphere
+#             for neurite in neuron.neurites:
+#                 self.animator.plotter -= neurite.cylinder[0]
+#                 self.animator.plotter -= neurite.cylinder[1]
+#             self.neurons.remove(neuron)
+
+#     def divide(self) -> None:
+#         """
+#         Handles neuron division logic, creating new neurons while maintaining constraints
+#         on density and cell cycle state.
+#         """
+#         new_neurons = []
+#         for neuron in self.neurons:
+#             if not neuron.ready_for_division:
+#                 neuron.clocks.cycle_clock.time_to_division -= 10 # reduce wait time before division
+#                 continue
+
+#             if self.density_check:
+#                 # Check if the maximum density is reached
+#                 if self.density_check.check_max_density(neuron.cell, self.grid):
+#                     # Prevent division and block further cycling
+#                     neuron.clocks.cycle_clock.remove_flag()
+#                     neuron.clocks.cycle_clock.trigger_block()
+#                     continue
+#             # Spread new neurons outward with a random direction and increased spacing
+#             spread_factor = np.random.uniform(5.0, 10.0)  # Increase for more spreading
+#             direction_vector = get_random_unit_vector(two_dimensions=self.simulation_2d)
+
+#             new_position = neuron.cell.position + (direction_vector * neuron.cell_radius * spread_factor)
+
+#             # Ensure new cell is not too close to existing ones
+#             while any(np.linalg.norm(new_position - other.cell.position) < 2.5 * neuron.cell_radius for other in self.neurons):
+#                 new_position = neuron.cell.position + (get_random_unit_vector(self.simulation_2d) * neuron.cell_radius * spread_factor)
+
+#             # Create new neuron at spread-out position
+#             new_neuron = self.create_new_neuron(new_position)
+#             new_neuron.cell.sphere.scale([1.0, 1.0, 1.0])  # Keep new cells spherical
+
+#             # Apply slight random jitter to avoid rigid structures
+#             jitter = np.random.uniform(-0.5, 0.5, size=3)
+#             new_neuron.cell.position += jitter
+
+#             new_neurons.append(new_neuron)  # Add to the list of new neurons
+
+#             # Remove flag for next division cycle
+#             neuron.clocks.cycle_clock.remove_flag()
+
+#         # Extend the neuron list only after loop completes
+#         self.neurons.extend(new_neurons)
+#         self.update_drawings()  # Ensure visualization updates
+
+
+#             #     else:
+#             #         # Create a new neuron nearby
+#             #         position = (
+#             #             get_random_unit_vector(two_dimensions=self.simulation_2d)
+#             #             * neuron.cell_radius
+#             #             * np.random.uniform(2.0,3.5)  # Reduced spacing for tighter clusters
+#             #         )
+#             #         position += neuron.cell.position
+#             #         new_neuron = self.create_new_neuron(position)
+#             #         new_neuron.cell.sphere.scale([1.0, 1.0, 1.0])  # Ensure spherical shape
+
+#             #         # Apply a small random jiggle after division
+#             #         jiggle_vector = np.random.uniform(-0.1, 0.1, size=3)
+#             #         new_neuron.cell.position += jiggle_vector   
+
+#             #         # Update the original neuron's cycle state
+#             #         neuron.clocks.cycle_clock.remove_flag()
+#             #         self.update_drawings()
+#             # else:
+#             #     # Create a new neuron nearby without density check
+#             #     position = (
+#             #         get_random_unit_vector(two_dimensions=self.simulation_2d)
+#             #         * neuron.cell_radius
+#             #         * np.random.uniform(2.0,3.5)  # Reduced spacing for tighter clusters
+#             #     )
+#             #     position += neuron.cell.position
+#             #     new_neuron = self.create_new_neuron(position)
+#             #     new_neuron.cell.sphere.scale([1.0, 1.0, 1.0])  # Ensure spherical shape
+
+#             #     # Apply a small random jiggle after division
+#             #     jiggle_vector = np.random.uniform(-0.1, 0.1, size=3)
+#             #     new_neuron.cell.position += jiggle_vector 
+
+#             #     # Update the original neuron's cycle state
+#             #     neuron.clocks.cycle_clock.remove_flag()
+#             #     self.update_drawings()
+
+
+#     def get_displacement_from_force(
+#         self, force: np.ndarray, time_step: float
+#     ) -> np.ndarray:
+#         """
+#         Returns the displacemnt value that a force originates, based on the equation of motion.
+
+#         Parameters
+#         ----------
+#         force
+#             The force value to be converted to a displacement
+#         time_step
+#             The time passed between simulation time points.
+#         """
+#         velocity = force / self.drag_coefficient
+#         return velocity * time_step
+
+#     def move_cell(
+#         self, neuron: Neuron, new_coordinates: Union[np.ndarray, List[float]]
+#     ) -> None:
+#         """
+#         Moves the cell to a new position and updates the proximal point of the first neurite.
+
+#         Parameters
+#         ----------
+#         neuron
+#             The neuron object to be moved.
+#         new_coordinates
+#             The new coordinates to be assigned to the cell body's centre.
+#         """
+#         if isinstance(new_coordinates, list):
+#             new_coordinates = np.array(new_coordinates)
+
+#         self.grid.remove_cell(neuron.cell)
+#         neuron.cell.set_center_position(new_coordinates)
+#         self.grid.register_cell(neuron.cell)
+
+#         if neuron.neurites:
+#             neuron.place_neurite_on_cell_surface(neuron.neurites[0])
+
+#     def move_neurite(self, neurite: Neurite, new_coordinates: np.ndarray) -> None:
+#         """
+#         Deals with moving a neurite's distal point and updating it on the grid.
+
+#         Parameters
+#         ----------
+#         neurite
+#             The neurite object to be moved.
+#         new_coordinates
+#             The new coordinates to be assigned to the neurite's distal point.
+#         """
+#         self.grid.remove_neurite(neurite)
+#         neurite.move_distal_point(new_coordinates)
+#         self.grid.register_neurite(neurite)
+
+#     def compute_displacements(self, time_step) -> None:
+#         """
+#         Computes the displacement for each object based on the resulting force.
+
+#         Parameters
+#         ----------
+#         time_step
+#             The time passed between simulation time points.
+#         """
+#         for i, neuron in enumerate(self.neurons):
+#             reversed_order = range(len(neuron.neurites) - 1, -1, -1)
+
+#             for j, neurite in zip(reversed_order, reversed(neuron.neurites)):
+
+#                 # Get force from spring
+#                 force_spring = neurite.get_spring_force()
+#                 neurite.force += force_spring
+#                 # Transmit the opposite force to the mother neurite/cell
+#                 # (Going through the neurites in reverse, once we arrive at 0 it is the last)
+#                 if j > 0:
+#                     # Transmit to the mother neurite
+#                     neuron.neurites[j - 1].force_from_daughter -= force_spring
+#                 else:
+#                     # Transmit to the cell
+#                     neuron.cell.force_from_daughter -= force_spring
+
+#                 # Get force from daughter
+#                 # Will contain force from spring and object interactions (the mother fraction)
+#                 neurite.force += neurite.force_from_daughter
+
+#                 # Get objects in the surrounding voxels
+#                 nearby_objects = self.grid.get_close_objects(neurite.distal_point)
+#                 nearby_cells = [
+#                     nearby_object
+#                     for nearby_object in nearby_objects
+#                     if isinstance(nearby_object, CellBody)
+#                 ]
+#                 nearby_neurites = [
+#                     nearby_object
+#                     for nearby_object in nearby_objects
+#                     if isinstance(nearby_object, Neurite)
+#                 ]
+
+#                 # Get forces from neighbor cells
+#                 for neighbor in nearby_cells:
+#                     if neighbor is neuron.cell:
+#                         continue
+
+#                     # Cell force and fraction to be transmitted to the distal point
+#                     cell_force, fraction = neurite.get_cell_neighbor_force(
+#                         neighbor, self.sphere_cylinder_int
+#                     )
+
+#                     # Apply force to the distal point
+#                     neurite.force += cell_force * fraction
+#                     # Transmit force to the neighbor
+#                     neighbor.force_from_neighbors -= cell_force
+
+#                     # Transmit the force from cell to proximal part of the neurite
+#                     # (Going through the neurites in reverse, once we arrive at 0 it is the last)
+#                     if j > 0:
+#                         neuron.neurites[j - 1].force_from_daughter += cell_force * (
+#                             1 - fraction
+#                         )
+#                     else:
+#                         neuron.cell.force_from_daughter += cell_force * (1 - fraction)
+
+#                 # Get forces from neighbor neurites
+#                 for neighbor in nearby_neurites:
+#                     if neighbor in neuron.neurites:
+#                         continue
+
+#                     neurite_force, fraction = neurite.get_neurite_neighbor_force(
+#                         neighbor, self.cylinder_int
+#                     )
+#                     neurite.force += neurite_force * fraction
+
+#                     # Transmit the force from cell to proximal part of the neurite
+#                     # (Going through the neurites in reverse, once we arrive at 0 it is the last)
+#                     if j > 0:
+#                         neuron.neurites[j - 1].force_from_daughter += neurite_force * (
+#                             1 - fraction
+#                         )
+#                     else:
+#                         neuron.cell.force_from_daughter += neurite_force * (
+#                             1 - fraction
+#                         )
+
+#             # Get cell bodies close to the cell
+#             nearby_objects = self.grid.get_close_objects(neuron.cell.position)
+#             nearby_cells = [
+#                 nearby_object
+#                 for nearby_object in nearby_objects
+#                 if isinstance(nearby_object, CellBody)
+#             ]
+
+#             for neighbor in nearby_cells:
+#                 if neuron.cell is neighbor:
+#                     continue
+#                 neuron.cell.force += neuron.cell.get_neighbor_force(
+#                     neighbor, self.sphere_int
+#                 )
+
+#         for i, neuron in enumerate(self.neurons):
+#             for j, neurite in enumerate(neuron.neurites):
+#                 neurite.force += neurite.force_from_daughter
+#                 displacement = self.get_displacement_from_force(
+#                     neurite.force, time_step
+#                 )
+#                 self.neurons[i].neurites[j].displacement = displacement
+
+#             # Add the forces that were already calculated from other neurites
+#             neuron.cell.force += neuron.cell.force_from_daughter
+#             neuron.cell.force += neuron.cell.force_from_neighbors
+
+#             # Convert force value to displacement to assign new position
+#             displacement = self.get_displacement_from_force(
+#                 neuron.cell.force, time_step
+#             )
+#             neuron.cell.displacement = displacement
+
+#     def update_cell_positions(self) -> None:
+#         """Updates the positions of all the simulation objects based on their velocity."""
+#         for neuron in self.neurons:
+#             neuron.cell.force = np.zeros(3)
+#             neuron.cell.force_from_neighbors = np.zeros(3)
+#             neuron.cell.force_from_daughter = np.zeros(3)
+
+#             for j, neurite in enumerate(neuron.neurites):
+#                 neurite.force = np.zeros(3)
+#                 neurite.force_from_daughter = np.zeros(3)
+#                 self.move_neurite(neurite, neurite.distal_point + neurite.displacement)
+
+#                 if j < len(neuron.neurites) - 1:
+#                     neuron.neurites[j + 1].move_proximal_point(
+#                         neuron.neurites[j].distal_point
+#                     )
+
+#             # Update the proximal position of the first neurite
+#             self.move_cell(neuron, neuron.cell.position + neuron.cell.displacement)
+
+#     def solve_mechanics(self, time_step) -> None:
+#         """
+#         Solves the mechanical interactions and updates the neurons' positions.
+
+#         Goes through each object and computes the resulting force acting on
+#         it, then gets the object's velocity based on the equation of motion.
+#         When all of the objects are checked, the positions are updated based
+#         on the calculated velocity.
+
+#         Parameters
+#         ----------
+#         time_step
+#             The time passed between simulation time points.
+#         """
+#         self.compute_displacements(time_step * 2)
+#         self.update_cell_positions()
+
+
+# class Simulation:
+#     """
+#     Class to create and run a simulation.
+
+#     Parameters
+#     ----------
+#     timer
+#         The structure to store the time data of the simulation.
+#     container
+#         The structure to store the spatial data of the simulation.
+#     """
+#     #directory = rf'C:\Users\oadebayo31\Downloads\neurorosettes-master\neurorosettes-master\tests\sim_images_newest'
+#     #os.makedirs(directory, exist_ok=True)
+
+#     def __init__(self, timer: Timer, container: SimulationContainer):
+#         self.timer = timer
+#         self.container = container
+#         self.grid = container.grid
+#         self.neruon_factory = container.neuron_factory
+#         self.contact_factory = container.contact_factory
+
+#     def run(self, total_steps: int = 500) -> None:
+#         """Runs the entire simulation and ensures frames are saved correctly."""
+#         frame_count = 0
+        
+#         # Ensure the correct save directory
+#         directory = r'C:\Users\16785\Desktop\neurorosette_code'
+#         os.makedirs(directory, exist_ok=True)  # Force folder creation
+
+#         # 🔴 PRINT DEBUG INFO BEFORE STARTING
+#         print("\n✅ DEBUG: Checking File Save Path")
+#         print(f"   Current Working Directory: {os.getcwd()}")
+#         print(f"   Target Save Directory: {directory}")
+
+#         # 🔴 TEST WRITING TO DIRECTORY
+#         test_file_path = os.path.join(directory, "debug_test.txt")
+#         try:
+#             with open(test_file_path, 'w') as f:
+#                 f.write("Test Write Success!")
+#             print(f"✅ SUCCESS: Test file written to {test_file_path}")
+#             os.remove(test_file_path)  # Cleanup
+#         except Exception as e:
+#             print(f"❌ ERROR: Cannot write to directory. Check folder permissions! {str(e)}")
+#             return  # Stop execution if folder is not writable
+
+#         print("\n🚀 Starting simulation loop...")
+        
+#         for step in range(total_steps):
+#             self.container.update()
+#             frame_count += 1
+
+#             if frame_count % 5 == 0:  # Save every 5 frames
+#                 frame_path = os.path.abspath(os.path.join(directory, f'frame_{frame_count:05d}.png'))
+
+#                 # 🔴 PRINT DEBUG INFO BEFORE SAVING
+#                 print(f"\n📸 Attempting to save frame {frame_count} to: {frame_path}")
+
+#                 try:
+#                     self.container.animator.plotter.render()  # Force render before saving
+#                     self.container.animator.save_screenshot(frame_path)
+
+#                     # 🔴 VERIFY IF FILE EXISTS AFTER SAVING
+#                     if os.path.exists(frame_path):
+#                         print(f"✅ SUCCESS: Frame {frame_count} saved at {frame_path}")
+#                     else:
+#                         print(f"❌ ERROR: Frame {frame_count} was NOT saved. File missing!")
+
+#                 except Exception as e:
+#                     print(f"❌ ERROR: Failed to save frame {frame_count}: {str(e)}")
+
+#         print("\n🎉 Simulation complete! Checking final saved files...")
+#         try:
+#             saved_files = os.listdir(directory)
+#             print(f"📂 Final contents of {directory}: {saved_files}")
+#         except Exception as e:
+#             print(f"❌ ERROR: Could not list directory contents: {str(e)}")
+
+
+  
+
+
+#     def save_meshes(self, file_name: str) -> None:
+#         """
+#         Saves the neurons as PLY objects. Cell bodies are saved as spheres.
+#         Neurites are saved as cylinders.
+#         """
+#         # Save the cell bodies as one mesh (spheres)
+#         meshes = merge([neuron.cell.sphere for neuron in self.container.neurons])
+        
+#         # Save the neurites as one mesh (cylinders)
+#         cylinders = []
+
+#         for neuron in self.container.neurons:
+#             for neurite in neuron.neurites:
+#                 # Create a cylinder from the neurite's geometry
+#                 cylinder = Cylinder(pos=neurite.proximal_point+0.5*neurite.spring_axis, 
+#                                     height=neurite.current_length, 
+#                                     axis=neurite.spring_axis/neurite.current_length,
+#                                     r=neurite.mechanics.radius)
+#                 cylinders.append(cylinder)
+
+#         cylinder_meshes = merge(cylinders)
+
+#         # Save the result
+#         write(meshes, f"{file_name}_cells.ply")
+#         if cylinder_meshes:
+#             write(cylinder_meshes, f"{file_name}_neurites.ply")
+
+#     @classmethod
+#     def from_file(cls, config_path: Union[Path, str]) -> "Simulation":
+#         """
+#         Initializes a Simulation object from a YAML config file.
+
+#         Parameters
+#         ----------
+#         config_path : str or Path
+#             The path to the YAML file config file.
+
+#         Returns
+#         -------
+#         Simulation
+#             The initialized simulation object.
+#         """
+#         if not isinstance(config_path, Path):
+#             config_path = Path(config_path)
+
+#         print(f"config path loaded: {config_path}")  # Debugging output
+
+#         parser = ConfigParser(config_path)
+#         domain_data = parser.get_domain_data()
+#         if "boundaries" not in domain_data:
+#             raise KeyError("The 'boundaries' key is misising in configuration")
+        
+#         grid_data = {
+#             "boundaries": domain_data["boundaries"],
+#             "step": domain_data["boundaries"]["step"]
+#         }
+#         print(f"DEBUG: Grid initialized with data -> {grid_data}")  # Debugging line
+
+#         grid = UniformGrid(boundaries=grid_data["boundaries"], step=grid_data["step"])
+
+#         timer = Timer(**parser.get_time_data())
+
+#         # # Ensure 'boundaries' exists
+#         # if "boundaries" not in domain_data:
+#         #     raise KeyError("The 'boundaries' key is missing in the configuration file. Check config.yml.")
+
+#         # boundaries = {"min": domain_data["boundaries"]["min"], "max": domain_data["boundaries"]["max"]}
+
+#         # grid = UniformGrid(boundaries, step=domain_data["step"])  # Corrected
+
+#         status_2d = parser.get_2d_status()
+#         drag = parser.get_drag_coefficient()
+
+#         number_of_neurites = parser.get_max_number_of_neurites()
+#         objects = ObjectFactory(**parser.get_objects_data())
+#         clocks = ClocksFactory(**parser.get_clocks_data())
+
+#         interactions_data = parser.get_interactions_data()
+#         interactions_type = interactions_data.pop("type")
+#         if interactions_type == "potentials":
+#             interactions = PotentialsFactory(**interactions_data)
+#         else:
+#             interactions = SimpleFactory(**interactions_data)
+
+#         container = SimulationContainer(
+#             grid=grid,
+#             simulation_2d=status_2d,
+#             neuron_factory=NeuronFactory(number_of_neurites, objects, clocks),
+#             contact_factory=interactions,
+#             timer=timer,
+#             drag_coefficient=drag,
+#         )
+
+#         return cls(timer, container)
+
+
+# import yaml  # Ensure YAML is imported
+# from typing import Union
+
+# class ConfigParser:
+#     """Parses configuration files to load simulation parameters."""
+
+#     def __init__(self, config_path: Union[Path,str]):
+#         """Loads YAML config file into a dictionary."""
+#         with open(config_path, "r") as file:
+#             self.config = yaml.safe_load(file)
+
+#         print(f"DEBUG: Loaded YAML configuration")
+
+
+
+#     def get_domain_data(self):
+#         """Retrieves domain (grid) configuration from the YAML file and ensures 'step' is inside 'boundaries'."""
+        
+#         # Load the domain section from the config file
+#         domain_data = self.config.get("domain", {})
+
+#         # Debugging: Print domain data
+#         print(f"DEBUG: domain_data -> {domain_data}")
+
+#         # Ensure 'boundaries' exists
+#         if "boundaries" not in domain_data:
+#             raise KeyError("The 'boundaries' key is missing in the configuration file. Check config.yml.")
+
+#         # Extract boundaries data
+#         boundaries = domain_data["boundaries"]
+
+#         # Ensure 'step' is inside 'boundaries'
+#         if "step" not in boundaries:
+#             boundaries["step"] = domain_data.get("step", 20.0)  # Move step inside boundaries if missing
+
+#         # Return the corrected structure
+#         return {"boundaries": boundaries}
+
+
+
+#     def get_time_data(self):
+#         """Retrieves simulation time settings."""
+#         return self.config.get("time", {"total_time": 1000, "step": 1})
+
+#     def get_2d_status(self):
+#         """Retrieves whether the simulation should run in 2D."""
+#         return self.config.get("simulation_2d", True)
+
+#     def get_drag_coefficient(self):
+#         """Retrieves drag coefficient settings."""
+#         return self.config.get("drag_coefficient", 10.0)
+
+#     def get_max_number_of_neurites(self):
+#         """Retrieves max neurites allowed per neuron."""
+#         return self.config.get("neurons", {}).get("max_number_of_neurites", 3)
+
+#     def get_objects_data(self):
+#         """Retrieves object properties."""
+
+#         objects_data = self.config.get("objects", {})
+
+#         return {
+#         "cell_radius": objects_data.get("cell_radius", 7.0),
+#         "cell_interaction_factor": objects_data.get("cell_interaction_factor", 1.0),
+#         "neurite_radius": objects_data.get("neurite_radius", 0.5),
+#         "neurite_interaction_factor": objects_data.get("neurite_interaction_factor", 0.8),
+#         "neurite_spring_constant": objects_data.get("neurite_spring_constant", 10.0),
+#         "neurite_default_length": objects_data.get("neurite_default_length", 20.0),
+#         }
+
+#     def get_clocks_data(self):
+#         """Retrieves clock properties for neuron proliferation, death, and differentiation rates."""
+#         clocks_data = self.config.get("clocks", {})
+
+#         return {
+#             "proliferation_rate": clocks_data.get("proliferation_rate", 1.5),  # Default: slow division
+#             "death_rate": clocks_data.get("death_rate", 0.0),  # Default: No death
+#             "differentiation_rate": clocks_data.get("differentiation_rate", 0.4),  # Default: slow differentiation
+#         }
+
+
+#     def get_interactions_data(self):
+#         """Retrieves interaction settings for neuron mechanics."""
+#         return self.config.get("interactions", {})
+
+#     def set(self, key: str, value):
+#         keys = key.split(".")
+#         config_section = self.config
+#         for k in keys[:-1]:
+#             config_section = config_section[k]
+#         config_section[keys[-1]] = value
+
+#     def save(self, config_path: Union[str, Path]):
+#         if not isinstance(config_path, Path):
+#             config_path = Path(config_path)
+#         with open(config_path, "w") as file:
+#             yaml.safe_dump(self.config, file)
+# # class ConfigParser:
+# #     def __init__(self, config_path: Union[str, Path]):
+# #         if not isinstance(config_path, Path):
+# #             config_path = Path(config_path)
+# #         with open(config_path, "r") as file:
+# #             self.config = yaml.safe_load(file)
+
+# #     def get_time_data(self):
+# #         return self.config["time"]
+
+# #     def get_domain_data(self):
+# #         return self.config["domain"]
+
+# #     def get_2d_status(self):
+# #         return self.config["domain"].get("use_2d", True)
+
+# #     def get_drag_coefficient(self):
+# #         return self.config["domain"].get("drag_coefficient", 10.0)
+
+# #     def get_max_number_of_neurites(self):
+# #         return self.config["neurons"].get("max_number_of_neurites", 3)
+
+# #     def get_objects_data(self):
+# #         return self.config["neurons"].get("objects", {})
+
+# #     def get_clocks_data(self):
+# #         return self.config["neurons"].get("clocks", {})
+
+# #     def get_interactions_data(self):
+# #         return self.config["interactions", {}]
+
+#     # def set(self, key: str, value):
+#     #     keys = key.split(".")
+#     #     config_section = self.config
+#     #     for k in keys[:-1]:
+#     #         config_section = config_section[k]
+#     #     config_section[keys[-1]] = value
+
+#     # def save(self, config_path: Union[str, Path]):
+#     #     if not isinstance(config_path, Path):
+#     #         config_path = Path(config_path)
+#     #     with open(config_path, "w") as file:
+#     #         yaml.safe_dump(self.config, file)
+
+# # Adjust configuration for testing rosette formation
+# CONFIG_PATH = r'C:\Users\16785\Desktop\neurorosette_code/config.yml'
+# parser = ConfigParser(CONFIG_PATH)
+# parser.set("neurons.clocks.proliferation_rate", 0.001)
+# parser.set("neurons.clocks.differentiation_rate", 0.001)
+# parser.set("interactions.sphere_sphere_adhesion", 10.0)
+# parser.set("time.total_time", 1000.0)  # Increased total simulation time
+# parser.save(CONFIG_PATH)
+
+# # Run simulation to validate indicator functionality
+# simulation = Simulation.from_file(CONFIG_PATH)
+# simulation.run()
+
+
+
+#    # def __init__(
+#     #     self,
+#     #     grid: UniformGrid,
+#     #     simulation_2d: bool,
+#     #     neuron_factory: NeuronFactory,
+#     #     contact_factory: ContactFactory,
+#     #     drag_coefficient: float = 10.0,
+#     #     density_check: Optional[CellDensityCheck] = None,
+#     # ) -> None:
+
+#     #     self.grid = grid
+#     #     self.simulation_2d = simulation_2d
+#     #     self.sphere_int = contact_factory.get_sphere_sphere_interactions()
+#     #     self.sphere_cylinder_int = contact_factory.get_sphere_cylinder_interactions()
+#     #     self.cylinder_int = contact_factory.get_cylinder_cylinder_interactions()
+#     #     self.neuron_factory = neuron_factory
+#     #     self.object_factory = self.neuron_factory.objects_factory
+#     #     self.drag_coefficient = drag_coefficient
+#     #     self.density_check = density_check
+#     #     self.animator = Animator()
+#     #     self.neurons = []
+
+#     #     if self.simulation_2d:
+#     #         self.animator.add_grid(
+#     #             self.grid.representation_grid_values,
+#     #             self.grid.representation_grid_values,
+#     #         )
+
+
+
+
+
+
+
+
