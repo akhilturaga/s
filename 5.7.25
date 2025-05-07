@@ -1,0 +1,227 @@
+# """Script to simulate the formation of Homer-Wright rosettes."""
+
+# import numpy as np    
+# from simulation import Simulation, Container
+# import os
+# import sys
+from vedo import Line,Plotter as VedoPlotter # If using vedo
+
+class Plotter:
+    def __init__(self):
+        self.vp = VedoPlotter()
+        self.lines = []  # Store lines for visualization
+
+    def addLine(self, start, end, c='red'):
+        from vedo import Line
+        line = Line(start, end, c=c, lw=0.004)
+        self.vp += line
+        print(f"🖍️ Added line from {start} to {end} with color {c}")
+        # """Adds a line to the visualization from start to end."""
+        # self.lines.append({'start': start, 'end': end, 'color': c})
+        # print(f"🖍️ Added line from {start} to {end} with color {c}")
+    def render(self):
+        for line_data in self.lines:
+            start = line_data['start']
+            end = line_data['end']
+            color = line_data['color']
+            self.vp += Line(start, end, c=color, lw=0.004)  # Add line to the scene
+        self.vp.show(interactive=True)
+
+plotter = Plotter()
+# def create_tissue(container: Container) -> None:
+#     """Creates and registers new 
+# s in the simulation world."""
+#     radius = 10.0
+#     number_of_cells = 12
+#     t = np.linspace(0, 2*np.pi, number_of_cells, endpoint=False)
+
+#     x = radius * np.cos(t)
+#     y = radius * np.sin(t)
+
+#     for x_coord, y_coord in zip(x, y):
+#         neuron = container.create_new_neuron(coordinates=[x_coord, y_coord, 0])
+#         neuron.set_outgrowth_axis(np.subtract([0, 0, 0], neuron.cell.position))
+#         #neuron.set_outgrowth_axis(np.subtract(np.zeros(3), neuron.cell.position))
+
+# def main():
+#     # Initialize simulation objects
+#      #config_path = r'C:\Users\oadebayo31\Downloads\neurorosettes-master\neurorosettes-master\config\config.yml'
+#      base_dir = r'C:\Users\oadebayo31\Downloads\neurorosettes-master\neurorosettes-master'
+#      config_path = os.path.join(base_dir, 'config', 'config.yml')
+    
+#     if not os.path.exists(config_path):
+#         print(f"Configuration file not found at {config_path}")
+#         sys.exit(1)
+
+#     sim_world = Simulation.from_file(config_path)
+#     # Create initial configuration
+#     create_tissue(sim_world.container)
+#     # Plot the current state of the simulation
+#     sim_world.container.animator.set_camera(height=400.0)
+#     sim_world.container.animator.show()
+#     # Run the simulation to check if springs work
+#     sim_world.run()
+#     # Plot the results (mark interactive as False to automatically  close the window)
+#     sim_world.container.animator.show(interactive=True)
+
+
+# if __name__ == "__main__":
+#     main()
+    
+"""Script to simulate the formation of Homer-Wright rosettes."""
+
+import numpy as np    
+from simulation import Simulation, SimulationContainer
+import os
+import sys
+
+
+# def create_tissue(container: SimulationContainer) -> None:
+#     """Creates and registers new neurons in the simulation world."""
+#     radius = 4.0  # Adjusted for tighter clustering
+#     number_of_cells = 20  # Increased for better rosette formation
+#     t = np.linspace(0, 2 * np.pi, number_of_cells, endpoint=False)
+
+#     x = radius * np.cos(t)
+#     y = radius * np.sin(t)
+
+#     for x_coord, y_coord in zip(x, y):
+#         neuron = container.create_new_neuron(coordinates=[x_coord, y_coord, 0])
+#         neuron.cell.sphere.color("blue")  # Set initial color to blue
+#         neuron.cell.sphere.scale([0.5, 0.5, 0.5])  # Ensure they are complete spheres
+#         neuron.set_outgrowth_axis(np.subtract([0, 0, 0], neuron.cell.position))
+
+
+print("Current working directory:", os.getcwd())
+
+def create_tissue(container: SimulationContainer, num_cells: int = 100, base_spacing: float = 2.5, use_3d: bool = False) -> None:
+    """
+    Creates and registers new neurons in the simulation world, ensuring a more spread-out initial state.
+    """
+    print(f"Creating initial tissue in a {'3D' if use_3d else '2D'} pattern...")
+
+    center_x, center_y, center_z = 0.0, 0.0, 0.0
+    spread_factor = 50.0  # Increase spread to prevent clumping
+
+    for _ in range(num_cells):
+        # Generate random placement within a set radius (avoids initial clustering)
+        radius = np.random.uniform(5.0, spread_factor)  # Start further apart
+        angle = np.random.uniform(0, 2 * np.pi)
+
+        x = center_x + radius * np.cos(angle) + np.random.uniform(-2.0, 2.0)
+        y = center_y + radius * np.sin(angle) + np.random.uniform(-2.0, 2.0)
+        z = np.random.uniform(-0.5, 0.5) if use_3d else 0.0  # Keep them mostly flat for now
+
+        neuron = container.create_new_neuron(coordinates=[x, y, z])
+        neuron.cell.sphere.scale([1.0, 1.0, 1.0])  # Keep shape uniform
+        neuron.cell.sphere.color("blue")  # Default starting color
+
+    print(f"Generated {num_cells} neurons with improved initial spacing.")
+
+
+def main():
+    # Ensure consistent paths and compatibility
+    base_dir = r'C:\Users\16785\Desktop\neurorosette_code'
+    config_path = os.path.join(base_dir, 'config.yml')
+
+    if not os.path.exists(config_path):
+        print(f"Configuration file not found at {config_path}")
+        sys.exit(1)
+
+    print("Initializing simulation...")
+    sim_world = Simulation.from_file(config_path)
+
+    # Ensure the simulation has a valid timer step
+    if sim_world.timer.step == 0:
+        raise ValueError("Simulation timer step is set to 0. Please check your configuration.")
+
+    # Replace the default container with SimulationContainer
+    sim_world.container = SimulationContainer(
+        grid=sim_world.grid,
+        simulation_2d=True,
+        plotter = plotter,
+        neuron_factory=sim_world.container.neuron_factory,
+        contact_factory=sim_world.contact_factory,
+        timer=sim_world.timer,
+        drag_coefficient=10.0,
+    )
+    # sim_world.container.plotter = plotter
+    # Create initial configuration with even plane distribution
+    print("Creating initial tissue...")
+    create_tissue(sim_world.container, num_cells=100, base_spacing=1.0, use_3d=False)
+
+    # Ensure all cells are blue initially
+    sim_world.container.update_sphere_colors_and_deform(time_step=0.0)
+
+    # Plot the current state of the simulation
+    print("Setting up animator...")
+    sim_world.container.animator.set_camera(height=400.0)
+    sim_world.container.animator.show()
+
+    # Run the simulation with jiggle and dynamic updates
+    print("Running simulation...")
+    current_time_step = 0  # Start at time 0
+    while sim_world.timer.current_time < sim_world.timer.total_time:
+        sim_world.container.jiggle_neurons(jiggle_magnitude=0.10)
+        sim_world.container.advance_cycles(sim_world.timer.step)
+
+        current_time = sim_world.timer.current_time
+
+        for i, neuron in enumerate(sim_world.container.neurons[:5]):
+            print(f"Neuron {i}: Ready for division? {neuron.ready_for_division}")
+
+        num_ready = sum(1 for n in sim_world.container.neurons if n.ready_for_division)
+        print(f"🧬 Neurons ready for division: {num_ready} / {len(sim_world.container.neurons)}")
+
+        new_neurons = []
+        for neuron in sim_world.container.neurons:
+            if neuron.ready_for_division:
+                print(f"✅ Attempting division for neuron at {neuron.cell.position}")
+                new_neuron = sim_world.container.replicate_neuron(neuron)
+                if new_neuron:
+                    print(f"🆕 New neuron created at {new_neuron.cell.position}")
+                    new_neurons.append(new_neuron)
+                else:
+                    print("❌ replicate_neuron returned None")
+
+        sim_world.container.neurons.extend(new_neurons)
+        print(f"🔄 Total neurons after division: {len(sim_world.container.neurons)}")
+
+        # Apply adhesion forces
+        current_time = sim_world.timer.current_time
+        for neuron in sim_world.container.neurons:
+            for other_neuron in sim_world.container.neurons:
+                if neuron is not other_neuron:
+                    adhesion_force = neuron.calculate_adhesion_force(other_neuron, current_time)
+                    neuron.cell.position += adhesion_force
+
+        sim_world.container.update_sphere_colors_and_deform(time_step=current_time)
+
+    # while current_time_step < sim_world.timer.total_time: 11:00 AM
+    #     sim_world.container.jiggle_neurons(jiggle_magnitude=0.10)  # Add jiggling effect
+    #     sim_world.container.advance_cycles(sim_world.timer.step)
+
+    #     # Apply adhesion forces after each cycle
+    #     current_time = sim_world.timer.current_time 
+
+    #     for neuron in sim_world.container.neurons:
+    #         for other_neuron in sim_world.container.neurons:
+    #             if neuron is not other_neuron:
+    #                 adhesion_force = neuron.calculate_adhesion_force(other_neuron, current_time)
+    #                 neuron.cell.position += adhesion_force  # Apply adhesion update
+
+    #     sim_world.container.update_sphere_colors_and_deform(time_step=current_time_step)
+    #     current_time_step += sim_world.timer.step  # Increment time step
+
+    # End the simulation
+    sim_world.run()
+
+    #Red Lines Drawn
+    sim_world.container.plotter.render()
+
+    # Display the final state
+    sim_world.container.animator.show(interactive=True)
+
+
+if __name__ == "__main__":
+    main()
