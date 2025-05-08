@@ -1,0 +1,4 @@
+            for cluster in top_10_clusters:
+                for neuron in cluster:
+                    neuron.cell.sphere.scale([0.93, 0.93, 1.05])
+                    pass
