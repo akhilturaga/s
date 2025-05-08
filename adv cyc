@@ -1,0 +1,242 @@
+ #     """Advances the simulation and applies trend-based modifications based on rosette formation parameters."""
+    #     self.divide()
+    #     self.timer.current_time += time_step
+    #     print(f"⏩ Updated time: {self.timer.current_time}")
+    # # In `advance_cycles` or simulation loop:
+    #     # for neuron in self.neurons:
+    #     #     if not hasattr(neuron, "lifetime"):
+    #     #         neuron.lifetime = np.random.uniform(100, 200)
+    #     #     if not hasattr(neuron, "age"):
+    #     #         neuron.age = 0
+    #     #     neuron.age += 1
+    #     #     if neuron.age > neuron.lifetime:
+    #     #         neuron.ready_to_die = True
+    #     # for neuron in self.neurons:
+    #     #     self.kill()
+    #     #     self.divide()
+    #     # 🔁 Lifecycle management
+    #     # self.check_and_flag_neurons_for_death()
+    #     # self.perform_neuron_death_cleanup()
+    #     # self.check_and_trigger_neuron_division()
+
+    #           # Compute Phase Parameters
+    #     C = compute_clustering_coefficient(self.neurons)
+    #     NNV = compute_nearest_neighbor_variance(self.neurons)
+    #     H = compute_orientation_entropy(self.neurons)
+    #     AR = compute_aspect_ratio(self.neurons)
+    #     RSI = compute_radial_symmetry(self.neurons)
+
+    #     # Log parameters
+    #     print(f"📊 C: {C:.4f}, NNV: {NNV:.4f}, H: {H:.4f}, AR: {AR:.4f}, RSI: {RSI:.4f}")
+    #     print(f"🔢 Total neurons: {len(self.neurons)}")
+    #     # 1️⃣ **Clustering Phase**
+    #     if not self.clustering_complete:
+    #         # while True:
+    #         #     # 🧠 Continuous directional jiggle for all neurons
+    #         # for neuron in self.neurons:
+    #         #     # Random small directional movement (jiggle + slight bias outward from center)
+    #         #     center = np.array([0.0, 0.0, 0.0])
+    #         #     direction = neuron.cell.position - center
+    #         #     if np.linalg.norm(direction) == 0:
+    #         #         direction = np.random.uniform(-1, 1, size=3)
+    #         #     direction = direction / np.linalg.norm(direction)
+
+    #         #     jiggle = np.random.uniform(-0.02, 0.02, size=3)
+    #         #     directional_bias = 0.01 * direction  # Adjust magnitude of outward motion
+
+    #         #     neuron.cell.position += jiggle + directional_bias
+
+    #         print(f"📌 Clustering in progress...")
+    #         # self.apply_clustering_force()
+    #         self.apply_density_aware_clustering_force
+    #         # Inside your simulation loop
+
+    #     time_interval = 25  
+    #     previous_time = self.timer.current_time - time_step
+    #     current_time = self.timer.current_time
+    #     # Trigger only when crossing an exact multiple of `time_interval`
+    #     # if not hasattr(self, "pre_polarization_scaled"):
+    #     if int(previous_time // time_interval) < int(current_time // time_interval) and int(current_time) <= 2200:
+    #         print(f"⏱️ Triggered at time {current_time:.2f}")
+    #         self.replicate_clusters_incrementally(target_cluster_size=random.randint(4, 8))
+    #         self.expand_largest_clusters(top_k=6, expansion_strength=0.05)
+            
+
+    #             # Trigger final expansion setup at t = 4200 (or nearby)
+    #     if int(previous_time // time_interval) < int(current_time // time_interval) and int(current_time) >= 2200 and len(self.neurons) <= 420:
+    #         print("🌟 Assigning neurons to top 8 clusters...")
+    #         time_interval = 2  
+    #         previous_time = self.timer.current_time - time_step
+    #         current_time = self.timer.current_time
+    #     # Trigger only when crossing an exact multiple of `time_interval`
+    #     # if not hasattr(self, "pre_polarization_scaled"):
+    #         if int(previous_time // time_interval) < int(current_time // time_interval):
+    #             self.replicate_once_in_top_8_clusters(target_cluster_size=45)
+    #         if int(previous_time // time_interval) < int(current_time // time_interval):
+    #             self.replicate_top_10_clusters_stepwise(target_cluster_size=45)
+    #         if len(self.neurons) >= 420:
+    #             # clusters = self.find_clusters(distance_threshold=4.5)
+    #             # top_clusters = sorted(clusters, key=len, reverse=True)[:6]
+    #             # cluster_centers = [np.mean([n.cell.position for n in cluster], axis=0) for cluster in top_clusters]
+
+    #             # assigned_neurons = set()
+    #             # excluded_neurons = set()
+
+    #             # for neuron in self.neurons:
+    #             #     if any(neuron in cluster for cluster in top_clusters):
+    #             #         continue  # already in a top cluster
+
+    #             #     position = neuron.cell.position
+    #             #     distances = [np.linalg.norm(position - center) for center in cluster_centers]
+    #             #     nearest_cluster_idx = np.argmin(distances)
+
+    #             #     if distances[nearest_cluster_idx] <= 18.0:
+    #             #         # attract to cluster center
+    #             #         direction = cluster_centers[nearest_cluster_idx] - position
+    #             #         neuron.cell.position += 0.1 * direction  # attraction strength
+    #             #         assigned_neurons.add(neuron)
+    #             #     else:
+    #             #         # check for isolation
+    #             #         is_lone = all(np.linalg.norm(position - other.cell.position) > 2.0 for other in self.neurons if other is not neuron)
+    #             #         if is_lone:
+    #             #             if hasattr(neuron.cell, "sphere"):
+    #             #                 neuron.cell.sphere.color("green")
+    #             #             neuron.excluded_from_dynamics = True
+    #             #             excluded_neurons.add(neuron)
+
+    #         # # freeze anything else not part of a top cluster
+    #         # for neuron in self.neurons:
+    #         #     if neuron not in assigned_neurons and neuron not in excluded_neurons and not any(neuron in c for c in top_clusters):
+    #         #         if hasattr(neuron.cell, "sphere"):
+    #         #             neuron.cell.sphere.color("green")
+    #         #         neuron.excluded_from_dynamics = True
+
+    #     # if not self.final_expansion_started and current_time >= 4200:
+    #     #     print("🚀 Final expansion initialized at t=4200")
+
+    #     #     # Step 1: Find 6 largest clusters
+    #     #     all_clusters = self.find_clusters(distance_threshold=4.5)
+    #     #     top_clusters = sorted(all_clusters, key=len, reverse=True)[:6]
+
+    #     #     self.final_expansion_clusters = top_clusters
+    #     #     self.final_expansion_progress = {i: 0 for i in range(6)}  # 0 replicated so far
+    #     #     self.final_expansion_started = True
+    #     # # Perform incremental replication every timestep after 4200
+    #     # if self.final_expansion_started:
+    #     #     for i, cluster in enumerate(self.final_expansion_clusters):
+    #     #         if self.final_expansion_progress[i] < 6:  # Cap at 6 replications per cluster
+    #     #             source_neuron = np.random.choice(cluster)
+    #     #             jitter = np.random.normal(scale=2.0, size=3)
+    #     #             new_pos = source_neuron.cell.position + jitter
+    #     #             new_neuron = self.create_new_neuron(new_pos)
+    #     #             cluster.append(new_neuron)
+    #     #             self.final_expansion_progress[i] += 1
+    #     #             print(f"🆕 Final expansion: cluster {i} now has {len(cluster)} neurons")
+    #     # if current_time >= 4200 and not hasattr(self, "excluded_clusters_flagged"):
+    #     #     all_clusters = self.find_clusters(distance_threshold=4.5)
+    #     #     for cluster in all_clusters:
+    #     #         if len(cluster) < 2:
+    #     #             for neuron in cluster:
+    #     #                 if hasattr(neuron.cell, "sphere"):
+    #     #                     neuron.cell.sphere.color("green")
+    #     #                 neuron.excluded_from_dynamics = True
+    #     #     self.excluded_clusters_flagged = True
+
+    #         # # Check if clustering is complete
+    #         # avg_distance = np.mean([
+    #         #     np.linalg.norm(n.cell.position - np.mean([m.cell.position for m in self.neurons], axis=0))
+    #         #     for n in self.neurons
+    #         # ])
+    #         # clusters = self.find_clusters(distance_threshold=4.5)
+    #         # avg_cluster_coef = compute_average_cluster_coefficient(clusters)
+
+    #     #     if avg_cluster_coef > 0.16 and current_time >= 5 and AR == 1:
+    #     #         self.clustering_complete = True
+    #     #         # before_count = len(self.neurons)
+    #     #         # self.remove_outlier_neurons(removal_threshold=3.5, min_cluster_size=20)
+    #     #         # after_count = len(self.neurons)
+    #     #         # removed = before_count - after_count
+
+    #     #         # print(f"🧠 Neurons before: {before_count}, after: {after_count}, removed: {removed}")
+    #     #         print("✅ Clustering complete! Moving to constriction.")
+
+    #     #              # **New Step: Compact clusters before spreading**
+    #             self.compact_clusters_spherically(attraction_strength=-0.1, iterations=20)
+
+    #             # self.replicate_clusters_balanced(target_cluster_size=30)
+
+    #     #         # 2️⃣ Gradual spreading after clustering, added after the spread force added to remove_outlier_neurons
+    #     # if self.clustering_complete and not hasattr(self, "clusters_spread"):
+    #             self.apply_cluster_spread(spread_strength=0.49)  # <— adjust as needed
+    #             self.clusters_spread = True  # ← use a **separate flag**
+    #             # self.replicate_clusters_balanced(target_cluster_size=30)
+               
+    #             # 📊 Log current cluster status
+    #             clusters = self.find_clusters(distance_threshold=4.5)
+    #             print(f"🔢 Total neurons: {len(self.neurons)}")
+    #             for i, cluster in enumerate(clusters):
+    #                 print(f"🧠 Cluster {i+1} size: {len(cluster)}")
+
+    #     # # 🧬 Scaling Phase - before polarization starts
+    #     # if self.clustering_complete and hasattr(self, "clusters_spread") and not hasattr(self, "pre_polarization_scaled"):
+    #         print("📦 Scaling neurons slightly before polarization...")
+
+    #         for neuron in self.neurons:
+    #             if hasattr(neuron.cell, "sphere"):
+    #                 neuron.cell.sphere.scale([0.9, 0.9, 1.1])  # 🔍 Adjust scale as needed
+    #         self.pre_polarization_scaled = True  # ✅ Only scale once
+
+    #     # elif self.clustering_complete and not self.polarization_complete:
+    #         print(f"📌 Polarization and Elongation in progress...")    
+
+    #     #     # 🔄 **Apply polarity with spreading & gradual alignment**
+    #         self.apply_polarity_establishment(spread_factor=0.035, alignment_duration=444.0)
+    #     #     # self.split_elongated_cells()
+
+    #     #     # ✅ **Check if polarization is complete**
+    #     # if self.polarization_complete:
+            
+    #         # for neuron in self.neurons:
+    #         #     if hasattr(neuron.cell, "sphere"):
+    #         #         neuron.cell.sphere.scale([0.8, 0.8, 2.0])  # 🔍 Adjust scale as needed
+    #         # self.pre_polarization_scaled = True  # ✅ Only scale once
+    #         print(f"✅ Polarization and Elongation **complete**! Moving to lumen formation.")
+
+
+    #     # if self.polarization_complete and not self.elongation_complete:
+    #     #     print(f"📌 Lumenation in progress...")
+    #     #     # self.project_clusters_onto_plane_gradually(projection_duration=2.0)
+    #     #     # self.spread_apart_clusters(spread_distance=30.0, spread_duration=2.0, spread_speed=0.05)
+    #     #     # elongation_factor = 0.025  # Adjust elongation intensity
+
+    #     #     # self.apply_elongation(elongation_factor=elongation_factor)
+            
+
+
+    #     # elif self.elongation_complete and not self.lumenation_complete:
+    #     #     print(f"💡 Lumenation in progress...")
+    #     #     # self.apply_lumenation(lumen_factor=0.1)
+    #     #     # # Get the current cluster center
+    #     #     # cluster_center = np.mean([n.cell.position for n in self.neurons], axis=0)
+
+    #     #     # # Define duration for smooth lumenation
+    #     #     # lumen_duration = 30.0
+    #     #     # current_time = self.timer.current_time
+
+    #     #     # if not hasattr(self, "lumenation_start_time"):
+    #     #     #     self.lumenation_start_time = current_time  # Set start time
+
+    #     #     # elapsed_time = current_time - self.lumenation_start_time
+    #     #     # lumen_progress = min(elapsed_time / lumen_duration, 1.0)  # Normalize (0 → 1)
+
+    #     #     # for neuron in self.neurons:
+    #     #     #     direction_from_center = normalize_vector(neuron.cell.position - cluster_center)
+                
+    #     #     #     # **Move outward gradually over time**
+    #     #     #     neuron.cell.position += direction_from_center * 0.241 * lumen_progress  
+
+    #     #     # # ✅ Mark lumenation complete
+    #     #     # if lumen_progress >= 1.0:
+    #     #     #     self.lumenation_complete = True
+    #     #     #     print(f"✅ Lumenation **complete**! Final structure achieved.")
+
