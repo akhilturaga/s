@@ -1,0 +1,46 @@
+from skimage import filters, measure, morphology
+import numpy as np
+
+def extract_morphological_features(image):
+    """
+    image: numpy array (H, W) or (3, H, W) image
+    Returns: feature vector as numpy array
+    """
+
+    # If 3-channel image, convert to grayscale
+    if image.ndim == 3 and image.shape[0] == 3:
+        image = np.mean(image, axis=0)   # crude grayscale conversion
+
+    # Threshold to create binary mask (segmentation)
+    thresh = filters.threshold_otsu(image)
+    binary = image > thresh
+
+    # Remove small noise
+    binary = morphology.remove_small_objects(binary, min_size=30)
+
+    # Label connected components
+    labeled = measure.label(binary)
+    regions = measure.regionprops(labeled)
+
+    if len(regions) == 0:
+        return np.array([0, 0, 0, 0, 0])  # handle empty case
+
+    # Extract features
+    cell_count = len(regions)
+    cell_areas = [r.area for r in regions]
+    mean_cell_size = np.mean(cell_areas)
+    eccentricities = [r.eccentricity for r in regions]
+    mean_eccentricity = np.mean(eccentricities)
+
+    # Lumen proxy → largest connected region (central lumen)
+    largest_area = max(cell_areas)
+
+    return np.array([
+        cell_count,
+        mean_cell_size,
+        mean_eccentricity,
+        largest_area,
+        np.std(cell_areas)   # variation in cell sizes
+    ])
+#run once per image 
+features = extract_morphological_features(image_np)
