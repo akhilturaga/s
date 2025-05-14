@@ -1,0 +1,356 @@
+
+# ========================
+# Neural Rosette Analysis Pipeline
+# Full System Code - All Stages
+# ========================
+
+# --------------------------
+# Stage 1: Data Acquisition
+# --------------------------
+import os
+import numpy as np
+from tifffile import imread
+from skimage.transform import resize
+from tqdm import tqdm
+
+def load_neural_rosette_dataset(data_dir, img_size=(256, 256)):
+    images = []
+    labels = []
+    stage_mapping = {'early_rosette': 0, 'mid_rosette': 1, 'mature_rosette': 2}
+
+    for experiment in os.listdir(data_dir):
+        exp_path = os.path.join(data_dir, experiment)
+        if not os.path.isdir(exp_path):
+            continue
+
+        for stage in stage_mapping.keys():
+            stage_path = os.path.join(exp_path, stage)
+            if not os.path.exists(stage_path):
+                continue
+
+            for img_file in tqdm(os.listdir(stage_path), desc=f"Loading {stage} from {experiment}"):
+                if img_file.endswith(".tif"):
+                    img_path = os.path.join(stage_path, img_file)
+                    img = imread(img_path)
+
+                    if img.shape[-1] == 3:
+                        img = np.moveaxis(img, -1, 0)
+                    elif img.shape[0] != 3:
+                        raise ValueError(f"Unexpected channel format in {img_path}")
+
+                    img_resized = np.array([resize(img[c], img_size, preserve_range=True) for c in range(3)])
+                    images.append(img_resized.astype(np.float32))
+                    labels.append(stage_mapping[stage])
+
+    images = np.stack(images)
+    return images, labels
+
+# --------------------------
+# Stage 2: Preprocessing
+# --------------------------
+import torch
+from torchvision import transforms
+
+def get_preprocessing_pipeline(img_size=256):
+    return transforms.Compose([
+        transforms.Lambda(lambda x: x / np.max(x)),
+        transforms.Lambda(lambda x: torch.tensor(x, dtype=torch.float32))   ,
+        transforms.Resize((img_size, img_size)),
+        transforms.RandomHorizontalFlip(),
+        transforms.RandomVerticalFlip(),
+        transforms.RandomRotation(degrees=15)
+    ])
+
+def preprocess_image(image, pipeline):
+    image = pipeline(image)
+    return image
+
+# --------------------------
+# Stage 3: Dataset + DataLoader
+# --------------------------
+from torch.utils.data import Dataset, DataLoader
+
+class NeuralRosetteDataset(Dataset):
+    def __init__(self, images, labels, transform=None):
+        self.images = images
+        self.labels = labels
+        self.transform = transform
+
+    def __len__(self):
+        return len(self.images)
+
+    def __getitem__(self, idx):
+        image = self.images[idx]
+        label = self.labels[idx]
+        image = torch.tensor(image, dtype=torch.float32)
+        if self.transform:
+            image = self.transform(image)
+        return image, label
+
+def get_dataloader(images, labels, batch_size=32, shuffle=True, img_size=256):
+    transform_pipeline = transforms.Compose([
+        transforms.Resize((img_size, img_size)),
+        transforms.RandomHorizontalFlip(),
+        transforms.RandomVerticalFlip(),
+        transforms.RandomRotation(degrees=15),
+        transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
+    ])
+
+    dataset = NeuralRosetteDataset(images, labels, transform=transform_pipeline)
+    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=shuffle)
+    return dataloader
+# --------------------------
+# Stage 4: Model + Training
+# --------------------------
+import torch.nn as nn
+import torchvision.models as models
+from torch.optim import Adam
+from torch.nn import CrossEntropyLoss
+
+def get_resnet_backbone(version='resnet18'):
+    if version == 'resnet18':
+        model = models.resnet18(weights=None)
+    elif version == 'resnet34':
+        model = models.resnet34(weights=None)
+    elif version == 'resnet50':
+        model = models.resnet50(weights=None)
+    else:
+        raise ValueError("Unsupported ResNet version")
+    model.conv1 = nn.Conv2d(3, 64, kernel_size=7, stride=2, padding=3, bias=False)
+    model.fc = nn.Identity()
+    return model
+
+class NeuralRosetteClassifier(nn.Module):
+    def __init__(self, num_classes=3, feature_dim=128, backbone_version='resnet18'):
+        super(NeuralRosetteClassifier, self).__init__()
+        self.backbone = get_resnet_backbone(version=backbone_version)
+        self.feature_layer = nn.Sequential(
+            nn.Linear(512, feature_dim),
+            nn.ReLU(),
+        )
+        self.classifier = nn.Linear(feature_dim, num_classes)
+
+    def forward(self, x):
+        x = self.backbone(x)
+        features = self.feature_layer(x)
+        logits = self.classifier(features)
+        return logits, features
+
+def train_model(model, dataloader, val_loader, num_epochs=10, lr=1e-3, device='cuda'):
+    model = model.to(device)
+    optimizer = Adam(model.parameters(), lr=lr)
+    criterion = CrossEntropyLoss()
+    best_acc = 0.0
+    best_model_state = None
+
+    for epoch in range(num_epochs):
+        model.train()
+        total_loss, correct, total = 0, 0, 0
+
+        for inputs, labels in dataloader:
+            inputs, labels = inputs.to(device), labels.to(device)
+            optimizer.zero_grad()
+            outputs, _ = model(inputs)
+            loss = criterion(outputs, labels)
+            loss.backward()
+            optimizer.step()
+
+            total_loss += loss.item() * inputs.size(0)
+            _, preds = torch.max(outputs, 1)
+            correct += torch.sum(preds == labels).item()
+            total += labels.size(0)
+
+        train_acc = correct / total
+        val_acc = evaluate_model(model, val_loader, device)
+        if val_acc > best_acc:
+            best_acc = val_acc
+            best_model_state = model.state_dict()
+
+    if best_model_state:
+        model.load_state_dict(best_model_state)
+    return model
+
+def evaluate_model(model, dataloader, device='cuda'):
+    model.eval()
+    correct, total = 0, 0
+    with torch.no_grad():
+        for inputs, labels in dataloader:
+            inputs, labels = inputs.to(device), labels.to(device)
+            outputs, _ = model(inputs)
+            _, preds = torch.max(outputs, 1)
+            correct += torch.sum(preds == labels).item()
+            total += labels.size(0)
+    return correct / total
+
+# Stage 5: Feature Visualization
+import matplotlib.pyplot as plt
+
+def visualize_feature_maps(model, image_tensor, layer_name='layer1'):
+    activation = {}
+
+    def hook_fn(module, input, output):
+        activation['output'] = output.detach()
+
+    layer = dict([*model.backbone.named_modules()])[layer_name]
+    hook = layer.register_forward_hook(hook_fn)
+
+    model.eval()
+    with torch.no_grad():
+        model(image_tensor.cuda())
+
+    hook.remove()
+    act = activation['output'].cpu().squeeze(0)
+    num_features = act.shape[0]
+
+    fig, axes = plt.subplots(4, 4, figsize=(12, 12))
+    for i, ax in enumerate(axes.flat):
+        if i >= num_features:
+            break
+        ax.imshow(act[i], cmap='viridis')
+        ax.axis('off')
+    plt.suptitle(f'Feature Maps from {layer_name}')
+    plt.show()
+def grad_cam(model, image_tensor, target_class, layer_name='layer4'):
+    gradients = {}
+    activations = {}
+
+    def backward_hook(module, grad_input, grad_output):
+        gradients['value'] = grad_output[0]
+
+    def forward_hook(module, input, output):
+        activations['value'] = output
+
+    layer = dict([*model.backbone.named_modules()])[layer_name]
+    layer.register_forward_hook(forward_hook)
+    layer.register_backward_hook(backward_hook)
+
+    model.eval()
+    image_tensor = image_tensor.cuda()
+    output, _ = model(image_tensor)
+    class_score = output[0, target_class]
+    model.zero_grad()
+    class_score.backward()
+
+    grads = gradients['value'][0]
+    acts = activations['value'][0]
+    weights = grads.mean(dim=[1, 2])
+    cam = (weights[:, None, None] * acts).sum(0).cpu()
+    cam = np.maximum(cam, 0)
+    cam = cam / cam.max()
+
+    img_np = image_tensor.cpu().squeeze(0).permute(1, 2, 0).numpy()
+    plt.figure(figsize=(6, 6))
+    plt.imshow(img_np / img_np.max())
+    plt.imshow(cam, cmap='jet', alpha=0.5)
+    plt.title("Grad-CAM heatmap overlay")
+    plt.axis('off')
+    plt.show()
+# --------------------------
+# Stage 6: Simulation Feedback Loop
+# --------------------------
+import torch.nn.functional as F
+
+class SimulationContainer:
+    def __init__(self, params):
+        """
+        params: dict of simulation parameters to tune
+        Example keys: 'adhesion_strength', 'migration_rate', etc.
+        """
+        self.params = params
+
+    def run_simulation(self, use_screenshot=False):
+        """
+        Runs simulation and outputs an image.
+        I need to replace this with my real Vedo simulation logic.
+        If use_screenshot=True, use vedo.screenshot().
+        Else, convert cell positions into numpy grid.
+        """
+        simulated_image = np.random.rand(256, 256)  # Placeholder
+        return simulated_image
+
+    def update_parameters(self, updates):
+        for key, value in updates.items():
+            self.params[key] = value
+
+def preprocess_sim_image(sim_image_np):
+    """
+    Converts simulation numpy image to tensor format for CNN input.
+    """
+    img = np.stack([sim_image_np] * 3, axis=0)  # (3, H, W)
+    img = img / img.max()
+    img_tensor = torch.tensor(img, dtype=torch.float32).unsqueeze(0)
+    return img_tensor
+
+def feedback_loop(model, real_image, simulation, num_iterations=20, lr=0.05, use_screenshot=False):
+    """
+    model: trained CNN model
+    real_image: real microscopy image (tensor [1, 3, H, W])
+    simulation: SimulationContainer object
+    """
+    current_params = simulation.params.copy()
+
+    for iteration in range(num_iterations):
+        sim_image_np = simulation.run_simulation(use_screenshot=use_screenshot)
+        sim_image_tensor = preprocess_sim_image(sim_image_np)
+
+        model.eval()
+        with torch.no_grad():
+            real_logits, real_features = model(real_image.cuda())
+            sim_logits, sim_features = model(sim_image_tensor.cuda())
+
+        loss = F.mse_loss(sim_features, real_features)
+        print(f"Iteration {iteration+1} | Loss: {loss.item():.4f}")
+
+        if loss.item() > 0.1:
+            if 'adhesion_strength' in current_params:
+                current_params['adhesion_strength'] *= (1 - lr)
+        else:
+            if 'adhesion_strength' in current_params:
+                current_params['adhesion_strength'] *= (1 + lr)
+
+        simulation.update_parameters(current_params)
+
+    return simulation
+
+# --------------------------
+# --------------------------
+# Example usage for Full Pipeline
+# --------------------------
+if __name__ == "__main__":
+    from sklearn.model_selection import train_test_split
+
+    # 1. Load dataset
+    images, labels = load_neural_rosette_dataset(data_dir="my_data_folder")
+
+    # 2. Split into train + validation sets
+    X_train, X_val, y_train, y_val = train_test_split(images, labels, test_size=0.2, random_state=42)
+
+    # 3. Create dataloaders
+    train_loader = get_dataloader(X_train, y_train, batch_size=32)
+    val_loader = get_dataloader(X_val, y_val, batch_size=32)
+
+    # 4. Initialize and train model
+    model = NeuralRosetteClassifier(num_classes=3).cuda()
+    model = train_model(model, train_loader, val_loader, num_epochs=10)
+
+    # 5. Select a real image (example: first image from val set)
+    real_image_np = X_val[0] / np.max(X_val[0])  # normalize
+    real_image_tensor = torch.tensor(real_image_np, dtype=torch.float32).unsqueeze(0).cuda()
+
+    # 6. Define simulation parameters
+    default_simulation_params = {
+        'adhesion_strength': 0.6,
+        'migration_rate': 0.3,
+        'spread_factor': -0.10,
+        'alignment_duration': 4.0,
+        'lumen_threshold': 0.8
+    }
+
+    # 7. Initialize simulation
+    sim = SimulationContainer(params=default_simulation_params)
+
+    # 8. Run feedback loop
+    tuned_sim = feedback_loop(model, real_image_tensor, sim, num_iterations=20)
+
+    print("Final tuned simulation parameters:", tuned_sim.params)
+
