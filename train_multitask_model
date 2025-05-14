@@ -1,0 +1,40 @@
+def train_multitask_model(model, dataloader, val_loader, num_epochs=10, lr=1e-3, device='cuda'):
+    model = model.to(device)
+    optimizer = Adam(model.parameters(), lr=lr)
+    stage_criterion = CrossEntropyLoss()
+    best_acc = 0.0
+    best_model_state = None
+
+    for epoch in range(num_epochs):
+        model.train()
+        total_loss, correct, total = 0, 0, 0
+
+        for inputs, labels, features in dataloader:
+            inputs, labels, features = inputs.to(device), labels.to(device), features.to(device)
+
+            optimizer.zero_grad()
+            stage_logits, predicted_features = model(inputs)
+
+            loss_stage = stage_criterion(stage_logits, labels)
+            loss_features = nn.functional.mse_loss(predicted_features, features)
+            loss = loss_stage + 0.5 * loss_features   # multi-task loss
+
+            loss.backward()
+            optimizer.step()
+
+            total_loss += loss.item() * inputs.size(0)
+            _, preds = torch.max(stage_logits, 1)
+            correct += torch.sum(preds == labels).item()
+            total += labels.size(0)
+
+        train_acc = correct / total
+        val_acc = evaluate_model(model, val_loader, device)   # you can keep this as-is
+        print(f"Epoch {epoch+1}: Train Acc: {train_acc:.4f}, Val Acc: {val_acc:.4f}")
+
+        if val_acc > best_acc:
+            best_acc = val_acc
+            best_model_state = model.state_dict()
+
+    if best_model_state:
+        model.load_state_dict(best_model_state)
+    return model
