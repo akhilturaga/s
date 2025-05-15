@@ -1,0 +1,735 @@
+
+# ========================
+# Neural Rosette Analysis Pipeline
+# Full System Code - All Stages
+# ========================
+
+# --------------------------
+# Stage 0: Feature Detection for G-Truth Files
+# --------------------------
+import os
+import numpy as np
+from tifffile import imread
+from skimage.transform import resize
+from tqdm import tqdm
+from skimage import filters, measure, morphology
+import numpy as np
+
+def extract_morphological_features(image):
+    """
+    image: numpy array (H, W) or (3, H, W) image
+    Returns: feature vector as numpy array
+    """
+
+    # If 3-channel image, convert to grayscale
+    if image.ndim == 3 and image.shape[0] == 3:
+        image = np.mean(image, axis=0)   # crude grayscale conversion
+
+    # Threshold to create binary mask (segmentation)
+    thresh = filters.threshold_otsu(image)
+    binary = image > thresh
+
+    # Remove small noise
+    binary = morphology.remove_small_objects(binary, min_size=30)
+
+    # Label connected components
+    labeled = measure.label(binary)
+    regions = measure.regionprops(labeled)
+
+    if len(regions) == 0:
+        return np.array([0, 0, 0, 0, 0])  # handle empty case
+
+    # Extract features
+    cell_count = len(regions)
+    cell_areas = [r.area for r in regions]
+    mean_cell_size = np.mean(cell_areas)
+    eccentricities = [r.eccentricity for r in regions]
+    mean_eccentricity = np.mean(eccentricities)
+
+    # Lumen proxy → largest connected region (central lumen)
+    largest_area = max(cell_areas)
+
+    return np.array([
+        cell_count,
+        mean_cell_size,
+        mean_eccentricity,
+        largest_area,
+        np.std(cell_areas)   # variation in cell sizes
+    ])
+
+# features = extract_morphological_features(image)
+
+# Stage 1: Data Acquisition
+
+def load_neural_rosette_dataset(data_dir, img_size=(256, 256)):
+    images = []
+    labels = []
+    stage_mapping = {'early_rosette': 0, 'mid_rosette': 1, 'mature_rosette': 2,} 
+    # etc
+
+    for experiment in os.listdir(data_dir):
+        exp_path = os.path.join(data_dir, experiment)
+        if not os.path.isdir(exp_path):
+            continue
+
+        for stage in stage_mapping.keys():
+            stage_path = os.path.join(exp_path, stage)
+            if not os.path.exists(stage_path):
+                continue
+
+            for img_file in tqdm(os.listdir(stage_path), desc=f"Loading {stage} from {experiment}"):
+                if img_file.endswith(".tif"):
+                    img_path = os.path.join(stage_path, img_file)
+                    img = imread(img_path)
+
+                    if img.shape[-1] == 3:
+                        img = np.moveaxis(img, -1, 0)
+                    elif img.shape[0] != 3:
+                        raise ValueError(f"Unexpected channel format in {img_path}")
+
+                    img_resized = np.array([resize(img[c], img_size, preserve_range=True) for c in range(3)])
+                    images.append(img_resized.astype(np.float32))
+                    labels.append(stage_mapping[stage])
+
+                    # Add feature extraction step
+                    # Convert to grayscale for analysis
+                    img_gray = np.mean(img_resized, axis=0)   # (256, 256)
+                    feature_vec = extract_morphological_features(img_gray)
+                    features.append(feature_vec)
+
+    images = np.stack(images)
+    features = np.stack(features)
+    return images, labels, features
+
+# --------------------------
+# Stage 2: Preprocessing
+# --------------------------
+import torch
+from torchvision import transforms
+
+def get_preprocessing_pipeline(img_size=256):
+    return transforms.Compose([
+        transforms.Lambda(lambda x: x / np.max(x)),
+        transforms.Lambda(lambda x: torch.tensor(x, dtype=torch.float32))   ,
+        transforms.Resize((img_size, img_size)),
+        transforms.RandomHorizontalFlip(),
+        transforms.RandomVerticalFlip(),
+        transforms.RandomRotation(degrees=15)
+    ])
+
+def preprocess_image(image, pipeline):
+    image = pipeline(image)
+    return image
+
+# --------------------------
+# Stage 3: Dataset + DataLoader
+# --------------------------
+from torch.utils.data import Dataset, DataLoader
+
+class NeuralRosetteDataset(Dataset):
+    def __init__(self, images, labels, features, transform=None):
+        self.images = images
+        self.labels = labels
+        self.features = features  # << NEW
+        self.transform = transform
+
+    def __len__(self):
+        return len(self.images)
+
+    def __getitem__(self, idx):
+        image = self.images[idx]
+        label = self.labels[idx]
+        feature = self.features[idx]
+        image = torch.tensor(image, dtype=torch.float32)
+        feature = torch.tensor(feature, dtype=torch.float32)
+        if self.transform:
+            image = self.transform(image)
+        return image, label, feature
+
+def get_dataloader(images, labels, features, batch_size=32, shuffle=True, img_size=256):
+    transform_pipeline = transforms.Compose([
+        transforms.Resize((img_size, img_size)),
+        transforms.RandomHorizontalFlip(),
+        transforms.RandomVerticalFlip(),
+        transforms.RandomRotation(degrees=15),
+        transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
+    ])
+
+    dataset = NeuralRosetteDataset(images, labels, features, transform=transform_pipeline)
+    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=shuffle)
+    return dataloader
+# --------------------------
+# Stage 4: Model + Training
+# --------------------------
+import torch.nn as nn
+import torchvision.models as models
+from torch.optim import Adam
+from torch.nn import CrossEntropyLoss
+
+def get_resnet_backbone(version='resnet18'):
+    if version == 'resnet18':
+        model = models.resnet18(weights=None)
+    elif version == 'resnet34':
+        model = models.resnet34(weights=None)
+    elif version == 'resnet50':
+        model = models.resnet50(weights=None)
+    else:
+        raise ValueError("Unsupported ResNet version")
+    model.conv1 = nn.Conv2d(3, 64, kernel_size=7, stride=2, padding=3, bias=False)
+    model.fc = nn.Identity()
+    return model
+
+# class NeuralRosetteClassifier(nn.Module):
+#     def __init__(self, num_classes=3, feature_dim=128, backbone_version='resnet18'):
+#         super(NeuralRosetteClassifier, self).__init__()
+#         self.backbone = get_resnet_backbone(version=backbone_version)
+#         self.feature_layer = nn.Sequential(
+#             nn.Linear(512, feature_dim),
+#             nn.ReLU(),
+#         )
+#         self.classifier = nn.Linear(feature_dim, num_classes)
+
+#     def forward(self, x):
+#         x = self.backbone(x)
+#         features = self.feature_layer(x)
+#         logits = self.classifier(features)
+#         return logits, features
+
+class NeuralRosetteMultiTaskClassifier(nn.Module):
+    def __init__(self, num_classes=3, feature_dim=128, num_features=5, backbone_version='resnet18'):
+        super().__init__()
+        self.backbone = get_resnet_backbone(version=backbone_version)
+        self.shared_layer = nn.Sequential(
+            nn.Linear(512, feature_dim),
+            nn.ReLU()
+        )
+        self.classifier = nn.Linear(feature_dim, num_classes)   # stage classification
+        self.feature_regressor = nn.Linear(feature_dim, num_features)  # NEW: predict morphological features
+
+    def forward(self, x):
+        x = self.backbone(x)
+        features = self.shared_layer(x)
+        stage_logits = self.classifier(features)
+        feature_outputs = self.feature_regressor(features)
+        return stage_logits, feature_outputs
+
+class NeuralRosetteMLP(nn.Module):
+    def __init__(self, input_dim, output_dim):
+        super().__init__()
+        self.model = nn.Sequential(
+            nn.Linear(input_dim, 128),
+            nn.ReLU(),
+            nn.Linear(128, 64),
+            nn.ReLU(),
+            nn.Linear(64, output_dim)
+        )
+
+    def forward(self, x):
+        return self.model(x)
+
+# def train_model(model, dataloader, val_loader, num_epochs=10, lr=1e-3, device='cuda'):
+#     model = model.to(device)
+#     optimizer = Adam(model.parameters(), lr=lr)
+#     criterion = CrossEntropyLoss()
+#     best_acc = 0.0
+#     best_model_state = None
+
+#     for epoch in range(num_epochs):
+#         model.train()
+#         total_loss, correct, total = 0, 0, 0
+
+#         for inputs, labels in dataloader:
+#             inputs, labels = inputs.to(device), labels.to(device)
+#             optimizer.zero_grad()
+#             outputs, _ = model(inputs)
+#             loss = criterion(outputs, labels)
+#             loss.backward()
+#             optimizer.step()
+
+#             total_loss += loss.item() * inputs.size(0)
+#             _, preds = torch.max(outputs, 1)
+#             correct += torch.sum(preds == labels).item()
+#             total += labels.size(0)
+
+#         train_acc = correct / total
+#         val_acc = evaluate_model(model, val_loader, device)
+#         if val_acc > best_acc:
+#             best_acc = val_acc
+#             best_model_state = model.state_dict()
+
+#     if best_model_state:
+#         model.load_state_dict(best_model_state)
+#     return model
+
+
+
+def train_multitask_model(model, dataloader, val_loader, num_epochs=10, lr=1e-3, device='cuda'):
+        model = model.to(device)
+        optimizer = Adam(model.parameters(), lr=lr)
+        stage_criterion = CrossEntropyLoss()
+        feature_criterion = nn.MSELoss()
+
+        best_acc = 0.0
+        best_model_state = None
+
+        for epoch in range(num_epochs):
+            model.train()
+            total_loss = 0.0
+            correct = 0
+            total = 0
+
+            for inputs, labels, features in dataloader:
+                inputs = inputs.to(device)
+                labels = labels.to(device)
+                features = features.to(device)
+
+                optimizer.zero_grad()
+                stage_logits, predicted_features = model(inputs)
+
+                loss_stage = stage_criterion(stage_logits, labels)
+                loss_features = feature_criterion(predicted_features, features)
+                loss = loss_stage + 0.5 * loss_features   # weighting factor
+
+                loss.backward()
+                optimizer.step()
+
+                total_loss += loss.item() * inputs.size(0)
+
+                # Calculate training accuracy
+                _, preds = torch.max(stage_logits, 1)
+                correct += torch.sum(preds == labels).item()
+                total += labels.size(0)
+
+            train_acc = correct / total
+            val_acc = evaluate_model_multitask(model, val_loader, device)
+
+            print(f"Epoch {epoch+1}/{num_epochs} - Train Acc: {train_acc:.4f} - Val Acc: {val_acc:.4f}")
+
+            # Save best model
+            if val_acc > best_acc:
+                best_acc = val_acc
+                best_model_state = model.state_dict()
+
+        # Load best model
+        if best_model_state:
+            model.load_state_dict(best_model_state)
+
+        return model
+    
+def evaluate_model_multitask(model, dataloader, device='cuda'):
+        model.eval()
+        correct = 0
+        total = 0
+
+        with torch.no_grad():
+            for inputs, labels, features in dataloader:
+                inputs = inputs.to(device)
+                labels = labels.to(device)
+
+                stage_logits, _ = model(inputs)   
+                _, preds = torch.max(stage_logits, 1)
+                correct += torch.sum(preds == labels).item()
+                total += labels.size(0)
+
+        return correct / total
+    
+def evaluate_model(model, dataloader, device='cuda'):
+    model.eval()
+    correct, total = 0, 0
+    with torch.no_grad():
+        for inputs, labels in dataloader:
+            inputs, labels = inputs.to(device), labels.to(device)
+            outputs, _ = model(inputs)
+            _, preds = torch.max(outputs, 1)
+            correct += torch.sum(preds == labels).item()
+            total += labels.size(0)
+    return correct / total
+
+def train_mlp(mlp, X_train, y_train, epochs=100, lr=1e-3):
+    optimizer = Adam(mlp.parameters(), lr=lr)
+    criterion = nn.MSELoss()
+
+    X_train = torch.tensor(X_train, dtype=torch.float32)
+    y_train = torch.tensor(y_train, dtype=torch.float32)
+
+    for epoch in range(epochs):
+        mlp.train()
+        optimizer.zero_grad()
+        outputs = mlp(X_train)
+        loss = criterion(outputs, y_train)
+        loss.backward()
+        optimizer.step()
+
+        if (epoch+1) % 10 == 0:
+            print(f"MLP Epoch {epoch+1}/{epochs}, Loss: {loss.item():.4f}")
+
+# Stage 5: Feature Visualization
+import matplotlib.pyplot as plt
+
+def visualize_feature_maps(model, image_tensor, layer_name='layer1'):
+    activation = {}
+
+    def hook_fn(module, input, output):
+        activation['output'] = output.detach()
+
+    layer = dict([*model.backbone.named_modules()])[layer_name]
+    hook = layer.register_forward_hook(hook_fn)
+
+    model.eval()
+    with torch.no_grad():
+        model(image_tensor.cuda())
+
+    hook.remove()
+    act = activation['output'].cpu().squeeze(0)
+    num_features = act.shape[0]
+
+    fig, axes = plt.subplots(4, 4, figsize=(12, 12))
+    for i, ax in enumerate(axes.flat):
+        if i >= num_features:
+            break
+        ax.imshow(act[i], cmap='viridis')
+        ax.axis('off')
+    plt.suptitle(f'Feature Maps from {layer_name}')
+    plt.show()
+def grad_cam(model, image_tensor, target_class, layer_name='layer4'):
+    gradients = {}
+    activations = {}
+
+    def backward_hook(module, grad_input, grad_output):
+        gradients['value'] = grad_output[0]
+
+    def forward_hook(module, input, output):
+        activations['value'] = output
+
+    layer = dict([*model.backbone.named_modules()])[layer_name]
+    layer.register_forward_hook(forward_hook)
+    layer.register_backward_hook(backward_hook)
+
+    model.eval()
+    image_tensor = image_tensor.cuda()
+    output, _ = model(image_tensor)
+    class_score = output[0, target_class]
+    model.zero_grad()
+    class_score.backward()
+
+    grads = gradients['value'][0]
+    acts = activations['value'][0]
+    weights = grads.mean(dim=[1, 2])
+    cam = (weights[:, None, None] * acts).sum(0).cpu()
+    cam = np.maximum(cam, 0)
+    cam = cam / cam.max()
+
+    img_np = image_tensor.cpu().squeeze(0).permute(1, 2, 0).numpy()
+    plt.figure(figsize=(6, 6))
+    plt.imshow(img_np / img_np.max())
+    plt.imshow(cam, cmap='jet', alpha=0.5)
+    plt.title("Grad-CAM heatmap overlay")
+    plt.axis('off')
+    plt.show()
+# --------------------------
+# Stage 6: Simulation Feedback Loop
+# --------------------------
+import torch.nn.functional as F
+
+# class SimulationContainer:
+#     def __init__(self, params):
+#         """
+#         params: dict of simulation parameters to tune
+#         Example keys: 'adhesion_strength', 'migration_rate', etc.
+#         """
+#         self.params = params
+
+#     def run_simulation(self, use_screenshot=False):
+#         """
+#         Runs simulation and outputs an image.
+#         I need to replace this with my real Vedo simulation logic.
+#         If use_screenshot=True, use vedo.screenshot().
+#         Else, convert cell positions into numpy grid.
+#         """
+#         simulated_image = np.random.rand(256, 256)  # Placeholder
+#         return simulated_image
+
+#     def update_parameters(self, updates):
+#         for key, value in updates.items():
+#             self.params[key] = value
+
+import numpy as np
+import torch
+
+class SimulationContainer:
+    def __init__(self, params, memory_bank=None):
+        """
+        params: dictionary of simulation parameters
+        memory_bank: optional list to store past synthetic images + model outputs
+        """
+        self.params = params
+        self.memory_bank = memory_bank if memory_bank is not None else []
+
+    def run_simulation_step(self):
+        """
+        Placeholder: generate a synthetic image based on current simulation parameters.
+        I have to replace with real simulation logic.
+        """
+        sim_image = np.random.rand(256, 256)  # <-- replace with simulation image
+        return sim_image
+
+    def run_simulation_step_with_model(self, model, expected_features=None, device='cuda'):
+        """
+        Full co-evolution step: simulation proposes → model evaluates → simulation updates
+        """
+        # Step 1: simulation proposes next state
+        sim_image = self.run_simulation_step()
+        sim_tensor = preprocess_sim_image(sim_image).to(device)
+
+        # Step 2: model evaluates
+        model.eval()
+        with torch.no_grad():
+            stage_logits, feature_outputs = model(sim_tensor)
+            features_pred = feature_outputs.cpu().numpy().flatten()
+            stage_pred = torch.argmax(stage_logits).item()
+
+        # Step 3: store image + prediction in memory bank
+        self.memory_bank.append({
+            'image': sim_image,
+            'features': features_pred,
+            'stage': stage_pred
+        })
+
+        # Step 4: adjust simulation based on model feedback
+        if expected_features is not None:
+            error = np.abs(features_pred - expected_features).mean()
+            print(f"Model-predicted features: {features_pred}")
+            print(f"Error vs expected: {error:.4f}")
+
+            # Example: adjust 1 parameter if error too high
+            if error > 0.1:
+                if 'adhesion_strength' in self.params:
+                    self.params['adhesion_strength'] *= 1.05  # small tweak
+            elif error < 0.05:
+                if 'adhesion_strength' in self.params:
+                    self.params['adhesion_strength'] *= 0.95
+
+        return sim_image, stage_pred, features_pred
+
+    def update_parameters(self, updates):
+        for key, value in updates.items():
+            self.params[key] = value
+
+
+def preprocess_sim_image(sim_image_np):
+    """
+    Converts simulation numpy image to tensor format for CNN input.
+    """
+    img = np.stack([sim_image_np] * 3, axis=0)  # (3, H, W)
+    img = img / img.max()
+    img_tensor = torch.tensor(img, dtype=torch.float32).unsqueeze(0).to('cuda')
+    return img_tensor
+
+def feedback_loop(model, real_image, simulation, num_iterations=20, lr=0.05, use_screenshot=False):
+    """
+    model: trained CNN model
+    real_image: real microscopy image (tensor [1, 3, H, W])
+    simulation: SimulationContainer object
+    """
+    current_params = simulation.params.copy()
+
+    for iteration in range(num_iterations):
+        sim_image_np = simulation.run_simulation(use_screenshot=use_screenshot)
+        sim_image_tensor = preprocess_sim_image(sim_image_np)
+
+        model.eval()
+        with torch.no_grad():
+            real_logits, real_features = model(real_image.cuda())
+            sim_logits, sim_features = model(sim_image_tensor.cuda())
+
+        loss = F.mse_loss(sim_features, real_features)
+        print(f"Iteration {iteration+1} | Loss: {loss.item():.4f}")
+
+        if loss.item() > 0.1:
+            if 'adhesion_strength' in current_params:
+                current_params['adhesion_strength'] *= (1 - lr)
+        else:
+            if 'adhesion_strength' in current_params:
+                current_params['adhesion_strength'] *= (1 + lr)
+
+        simulation.update_parameters(current_params)
+
+    return simulation
+
+# --------------------------
+# --------------------------
+# Example usage for Full Pipeline
+# --------------------------
+# if __name__ == "__main__":
+#     from sklearn.model_selection import train_test_split
+
+#     # 1. Load dataset
+#     images, labels, features = load_neural_rosette_dataset(data_dir="my_data_folder")
+
+#     # 2. Split into train + validation sets
+#     X_train, X_val, y_train, y_val, f_train, f_val = train_test_split(images, labels, features, test_size=0.2, random_state=42)
+
+#     # 3. Create dataloaders
+#     train_loader = get_dataloader(X_train, y_train, f_train, batch_size=32)
+#     val_loader = get_dataloader(X_val, y_val, f_val, batch_size=32)
+
+#     # 4. Initialize and train model
+#     model = NeuralRosetteMultiTaskClassifier(num_classes=3).cuda()
+#     model = train_multitask_model(model, train_loader, val_loader, num_epochs=10)
+
+#     # 5. Select a real image (example: first image from val set)
+#     real_image_np = X_val[0] / np.max(X_val[0])  # normalize
+#     real_image_tensor = torch.tensor(real_image_np, dtype=torch.float32).unsqueeze(0).cuda()
+
+#     # 6. Define simulation parameters
+#     default_simulation_params = {
+#         'adhesion_strength': 0.6,
+#         'migration_rate': 0.3,
+#         'spread_factor': -0.10,
+#         'alignment_duration': 4.0,
+#         'lumen_threshold': 0.8
+#     }
+
+#     # 7. Initialize simulation
+#     sim = SimulationContainer(params=default_simulation_params)
+
+#     # 8. Run feedback loop
+#     tuned_sim = feedback_loop(model, real_image_tensor, sim, num_iterations=20)
+
+#     print("Final tuned simulation parameters:", tuned_sim.params)
+def load_experiment_config(file_path="experiment_config.json"):
+    import json
+    with open(file_path, "r") as f:
+        return json.load(f)
+
+if __name__ == "__main__":
+    from sklearn.model_selection import train_test_split
+    import numpy as np
+
+    #  1. Load experiment configuration
+    config = load_experiment_config("experiment_config.json")
+
+    initial_stage = config["initial_stage"]
+    simulate_until_day = config["simulate_until_day"]
+    initial_metrics = np.array([
+        config["initial_metrics"]["cell_count"],
+        config["initial_metrics"]["mean_size"],
+        config["initial_metrics"]["eccentricity"],
+        config["initial_metrics"]["lumen_area"],
+        config["initial_metrics"]["size_std"]
+    ])
+#will have many more manual features, need time to analyze and determine which ones will be beneficial
+
+    #  2. Load dataset
+    images, labels, features = load_neural_rosette_dataset(data_dir="my_data_folder")
+
+    # 3. Split into train + validation sets
+    X_train, X_val, y_train, y_val, f_train, f_val = train_test_split(
+        images, labels, features, test_size=0.2, random_state=42
+    )
+
+    # 4. Create dataloaders
+    train_loader = get_dataloader(X_train, y_train, f_train, batch_size=32)
+    val_loader = get_dataloader(X_val, y_val, f_val, batch_size=32)
+
+    # 5. Initialize and train model
+    model = NeuralRosetteMultiTaskClassifier(num_classes=3).cuda()
+    model = train_multitask_model(model, train_loader, val_loader, num_epochs=10)
+# 5.5 Extract dataset hybrid features for MLP training
+    X_mlp = []
+    y_mlp = []
+
+    for i in range(len(X_train) - 1):
+        img_t = X_train[i]
+        img_t1 = X_train[i+1]
+
+        manual_t = f_train[i]
+        manual_t1 = f_train[i+1]
+
+        img_t_tensor = torch.tensor(img_t, dtype=torch.float32).unsqueeze(0).to('cuda')
+        with torch.no_grad():
+            _, cnn_t = model(img_t_tensor)
+        cnn_t = cnn_t.cpu().numpy().flatten()
+
+        hybrid_t = np.concatenate([manual_t, cnn_t])
+        X_mlp.append(hybrid_t)
+        y_mlp.append(manual_t1)   # predict next day's manual features
+
+    X_mlp = np.array(X_mlp)
+    y_mlp = np.array(y_mlp)
+
+    # 5.6 Train MLP predictor
+    input_dim = X_mlp.shape[1]
+    output_dim = y_mlp.shape[1]
+    mlp = NeuralRosetteMLP(input_dim, output_dim).to('cuda')
+
+    train_mlp(mlp, X_mlp, y_mlp, epochs=100, lr=1e-3)
+
+    # 6. Setup initial simulation parameters
+    default_simulation_params = {
+        'adhesion_strength': 0.6,
+        'migration_rate': 0.3,
+        'spread_factor': -0.10,
+        'alignment_duration': 4.0,
+        'lumen_threshold': 0.8
+    }
+
+    # Optionally adjust based on experiment config stage
+    if initial_stage == "early_rosette":
+        default_simulation_params['adhesion_strength'] = 0.4
+    elif initial_stage == "mid_rosette":
+        default_simulation_params['adhesion_strength'] = 0.6
+    elif initial_stage == "mature_rosette":
+        default_simulation_params['adhesion_strength'] = 0.8
+
+    # 7. Initialize simulation
+    sim = SimulationContainer(params=default_simulation_params)
+
+    # 8. Day 0 calibration (optional, HIGHLY RECOMMENDED)
+    print("\n--- Day 0 (Initial Calibration) ---")
+    sim_image, stage, features = sim.run_simulation_step_with_model(
+        model, expected_features=initial_metrics
+    )
+    print(f"Day 0 - Stage: {stage} - Features: {features}\n")
+
+    # 9. Co-evolution loop (simulate_until_day steps)
+# -----------------------
+# 9. MLP-driven Simulation Loop
+# -----------------------
+    print("--- Starting Simulation ---")
+    for day in range(1, simulate_until_day + 1):
+        # Simulation proposes next image
+        sim_image = sim.run_simulation_step()
+
+        # Extract manual features from simulated image
+        manual_features = extract_morphological_features(sim_image)
+
+        # Extract CNN internal features from simulated image
+        cnn_tensor = preprocess_sim_image(sim_image).to('cuda')
+        with torch.no_grad():
+            _, cnn_features = model(cnn_tensor)
+        cnn_features = cnn_features.cpu().numpy().flatten()
+
+        # Combine manual + CNN features → hybrid input for MLP
+        hybrid_input = np.concatenate([manual_features, cnn_features])
+        hybrid_input = torch.tensor(hybrid_input, dtype=torch.float32).unsqueeze(0)
+
+        # Predict next day manual features using MLP
+        predicted_next_manual = mlp(hybrid_input).detach().cpu().numpy().flatten()
+
+        # Calculate current error (simulation vs. MLP prediction)
+        error = np.abs(manual_features - predicted_next_manual).mean()
+        print(f"Simulation Day {day} | Error vs. expected: {error:.4f}")
+
+        # (Optional) Update simulation parameters to minimize error
+        if error > 0.1:
+            if 'adhesion_strength' in sim.params:
+                sim.params['adhesion_strength'] *= 1.05
+        elif error < 0.05:
+            if 'adhesion_strength' in sim.params:
+                sim.params['adhesion_strength'] *= 0.95
+
+    print("\nSimulation complete.")
+    print("Final simulation parameters:", sim.params)
+
+
