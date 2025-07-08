@@ -1,0 +1,220 @@
+
+# These are the basic tools I need for this pipeline.
+# I'm using OpenCV (cv2) for image comparison, NumPy for numerical operations
+# matplotlib for visualizing frames and overlays, os/json for handling files and metadata,
+# re to extract numbers from filenames
+
+import os
+import json
+import cv2
+import matplotlib.pyplot as plt
+import numpy as np
+import re
+
+
+# functions quantify what kind of motion is happening between any two consecutive images.
+
+# calculates a centroid based on pixel intensity. 
+# Basically, I use this to see where most of the movement is happening — I weight the average by how "intense" the change is.
+def estimate_weighted_centroid(gray_diff):
+    y_coords, x_coords = np.where(gray_diff > 30)  # Only look at pixels above this threshold; helps cut out noise
+    if len(x_coords) == 0:
+        return (0, 0)  # No motion detected
+    weights = gray_diff[y_coords, x_coords]
+    cx = np.average(x_coords, weights=weights)
+    cy = np.average(y_coords, weights=weights)
+    return cy, cx
+
+# splits the whole image into a grid (default 10x10 = 100 regions) and counts how much movement happened in each.
+# like getting a heatmap of which part of the image is most active.
+def regional_density_shift(gray_diff, grid=10):
+    h, w = gray_diff.shape
+    regions = {}
+    for i in range(grid):
+        for j in range(grid):
+            y0, y1 = i*h//grid, (i+1)*h//grid
+            x0, x1 = j*w//grid, (j+1)*w//grid
+            region = gray_diff[y0:y1, x0:x1]
+            regions[(i, j)] = np.sum(region)  # Total motion in each region
+    return regions
+
+# checks how symmetric the motion is across the left and right halves of the image.
+# assuming symmetric motion often means organized formation (e.g., rosette structure forming).
+def symmetry_score(gray_diff):
+    h, w = gray_diff.shape
+    w_half = w // 2
+    left = gray_diff[:, :w_half]
+    right = np.fliplr(gray_diff[:, -w_half:])  # Flip so we can compare mirror-wise
+    min_shape = min(left.shape[1], right.shape[1])
+    score = np.mean(left[:, :min_shape] == right[:, :min_shape])
+    return score
+
+# This is the core function that gives me a sentence or two about what’s happening between frames.
+# AI-style interpretation logic based on direction of motion, symmetry, and density distribution.
+def describe_motion(img1, img2, show_overlay=False):
+    diff = cv2.absdiff(img1, img2)
+    gray = cv2.cvtColor(diff, cv2.COLOR_BGR2GRAY)
+    _, binary = cv2.threshold(gray, 30, 255, cv2.THRESH_BINARY)  # Binary motion map
+
+    centroid = estimate_weighted_centroid(binary)
+    symmetry = symmetry_score(binary)
+    density_zones = regional_density_shift(binary, grid=10)
+
+    h, w = gray.shape
+    y_c, x_c = centroid
+
+    motion_description = []
+
+    # Determine vertical direction
+    if y_c < h // 3:
+        vert = "upward"
+    elif y_c > 2 * h // 3:
+        vert = "downward"
+    else:
+        vert = "centered vertically"
+
+    # Determine horizontal direction
+    if x_c < w // 3:
+        horiz = "left"
+    elif x_c > 2 * w // 3:
+        horiz = "right"
+    else:
+        horiz = "centered horizontally"
+
+    if vert != "centered vertically" or horiz != "centered horizontally":
+        motion_description.append(f"Predominantly {vert}-{horiz} motion detected.")
+    else:
+        motion_description.append("Movement concentrated at image center.")
+
+    # Symmetry interpretation
+    if symmetry > 0.9: #just picked 0.9 as very sym, can change
+        motion_description.append("Motion pattern appears highly symmetric.")
+    elif symmetry < 0.6:
+        motion_description.append("Asymmetric motion pattern observed.")
+    else:
+        motion_description.append("Moderate symmetry in motion.")
+
+    # checks if the motion is happening mostly in the center or on the edges.
+    # Central region = the 2x2 block at the center of 10x10 grid.
+    
+    # quantifying how much of the observed movement happens near the center of the image.
+    # need to decide what "center" actually means in this context.
+    # I define the center using a 2x2 region right at the heart of the grid: (4,4), (4,5), (5,4), and (5,5).
+    # These four tiles collectively form a square at the center and are a reasonable proxy for central motion.
+    # gives me robust way to gauge whether a rosette or dense group of neurons is forming near the center.
+
+    center_keys = [(4,4), (4,5), (5,4), (5,5)]
+    center_density = sum(density_zones.get(k,0) for k in center_keys)
+    total_density = sum(density_zones.values())
+
+    if total_density == 0:
+        motion_description.append("No motion detected.")
+    else:
+        center_ratio = center_density / total_density
+        if center_ratio > 0.65:
+            motion_description.append("Motion is strongly centralized.")
+        elif center_ratio < 0.35:
+            motion_description.append("Motion is mostly peripheral.")
+        else:
+            motion_description.append("Motion is balanced between center and edges.")
+
+    # Highlight the region with most motion
+    max_region = max(density_zones, key=density_zones.get)
+    motion_description.append(f"Highest movement occurred in region {max_region}.")
+
+    # Optionally, show region overlay grid
+    if show_overlay:
+        overlay_image = img2.copy()
+        step_y, step_x = h // 10, w // 10
+        for i in range(10):
+            for j in range(10):
+                y, x = i * step_y, j * step_x
+                cv2.putText(overlay_image, f"{i},{j}", (x + 5, y + 15),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 0), 1)
+        plt.figure(figsize=(6, 6))
+        plt.imshow(cv2.cvtColor(overlay_image, cv2.COLOR_BGR2RGB))
+        plt.title("Overlay with Region Labels")
+        plt.axis('off')
+        plt.show()
+
+    return " ".join(motion_description)
+
+
+# This pulls in descriptive annotations I wrote by hand or generated previously.
+with open("interpretation_metadata_439_449.json", "r") as f:
+    metadata = json.load(f)
+
+# Extract the image number from a filename like "Screenshot (443).png"
+def extract_numeric_id(filename):
+    match = re.search(r'\d+', filename)
+    return match.group(0) if match else None
+
+# all PNG and JPG images from my "images" directory
+image_dir = "images"
+filenames = sorted([f for f in os.listdir(image_dir) if f.endswith(".png") or f.endswith(".jpg")])
+
+#compare each image pair one after the other and log the results.
+
+frame_pixel_count = None  # Just need this once for percent calculations
+
+for i in range(len(filenames) - 1):
+    file1, file2 = filenames[i], filenames[i + 1]
+    path1, path2 = os.path.join(image_dir, file1), os.path.join(image_dir, file2)
+
+    img1 = cv2.imread(path1)
+    img2 = cv2.imread(path2)
+
+    if img1 is None or img2 is None:
+        print(f"❌ Failed to load {file1} or {file2}")
+        continue
+
+    img1_rgb = cv2.cvtColor(img1, cv2.COLOR_BGR2RGB)
+    img2_rgb = cv2.cvtColor(img2, cv2.COLOR_BGR2RGB)
+
+    if frame_pixel_count is None:
+        frame_pixel_count = img1.shape[0] * img1.shape[1]
+
+    diff = cv2.absdiff(img1, img2)
+    gray = cv2.cvtColor(diff, cv2.COLOR_BGR2GRAY)
+    _, thresh = cv2.threshold(gray, 25, 255, cv2.THRESH_BINARY)  # 25 = low threshold to include small shifts
+    diff_mask = cv2.cvtColor(thresh, cv2.COLOR_GRAY2RGB)
+
+    highlighted = cv2.addWeighted(img2_rgb, 0.7, diff_mask, 0.3, 0)
+
+    changed_pixels = np.sum(thresh > 0)
+    percent_change = (changed_pixels / frame_pixel_count) * 100
+
+    id1 = extract_numeric_id(file1)
+    id2 = extract_numeric_id(file2)
+    frame_key = f"{id1}_to_{id2}"
+    metadata_entry = metadata.get(frame_key, None)
+
+    ai_interpretation = describe_motion(img1, img2)
+
+    print(f"\nFrame: {file1} → {file2}")
+    print(f"Pixels Changed: {changed_pixels}")
+    print(f"% of Frame Changed: {percent_change:.2f}%")
+    print(f"AI Interpretation: {ai_interpretation}")
+    print("Metadata for second frame:")
+    if metadata_entry:
+        for key, value in metadata_entry.items():
+            print(f"   {key}: {value}")
+    else:
+        print("   No metadata found for this frame.")
+    print("-" * 60)
+
+    fig, axes = plt.subplots(1, 3, figsize=(18, 6))
+    axes[0].imshow(img1_rgb)
+    axes[0].set_title(f"{file1}", fontsize=9)
+
+    axes[1].imshow(img2_rgb)
+    axes[1].set_title(f"{file2}", fontsize=9)
+
+    axes[2].imshow(highlighted)
+    axes[2].set_title("Movement Overlay", fontsize=10)
+
+    for ax in axes:
+        ax.axis('off')
+
+    plt.tight_layout()
+    plt.show()
